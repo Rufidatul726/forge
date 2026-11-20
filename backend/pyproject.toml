@@ -1,0 +1,35 @@
+[project]
+name = "forge-agent"
+version = "0.1.0"
+description = "A model-agnostic AI coding agent"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115.0",
+    "gitpython>=3.1.44",
+    "httpx>=0.28.1",
+    "prompt-toolkit>=3.0.50",
+    "pydantic>=2.10.6",
+    "pydantic-settings>=2.7.1",
+    "rich>=13.9.4",
+    "typer>=0.15.1",
+    "uvicorn[standard]>=0.34.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3.5",
+]
+
+[project.scripts]
+forge = "forge.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/forge"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
