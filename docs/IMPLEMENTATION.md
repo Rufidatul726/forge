@@ -13,6 +13,8 @@ This document is the implementation checklist and handoff point for the project.
 - [x] Add development CORS configuration and separate backend/frontend environment examples.
 - [x] Ignore local environment files so credentials are not committed.
 - [x] Add backend CLI/API tests and document setup, boundaries, and commands.
+- [x] Define documented response models and consistent validation, HTTP, and server error responses.
+- [x] Add request IDs, request-completion logging, and validated runtime/CORS settings.
 
 ### Not implemented yet
 
@@ -32,12 +34,12 @@ The current prompt CLI is a placeholder that exits with a clear message. API pro
 
 ### 1. Stabilize contracts and runtime
 
-- Define typed API request/response models and consistent error responses.
-- Add a health test and provider-status tests that isolate environment settings.
-- Establish logging, request IDs, and configuration validation.
-- Keep secrets server-side and require explicit production CORS configuration.
+- [x] Define typed API response models and consistent error responses.
+- [x] Add health and provider-status tests that isolate environment settings.
+- [x] Establish request logging, request IDs, and configuration validation.
+- [x] Keep secrets server-side and require explicit production CORS configuration.
 
-**Done when:** API schemas are documented and validated by tests; configuration errors are visible and actionable.
+**Done:** API success and error schemas are documented in OpenAPI and tested; invalid production CORS configuration fails during settings validation.
 
 ### 2. Add model providers
 

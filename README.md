@@ -89,6 +89,23 @@ The prompt runner is not implemented yet; `forge -p ...` currently reports that 
 
 These are initial integration endpoints, not the agent execution API.
 
+Every API response includes an `X-Request-ID` header. Errors use a consistent JSON contract:
+
+```json
+{
+  "error": {"code": "not_found", "message": "Resource not found."},
+  "request_id": "..."
+}
+```
+
+Validation errors may include sanitized field locations and messages. Unexpected errors return a generic message; logs include the request ID, method, path, status, duration, and exception type without echoing exception text.
+
+## Backend configuration
+
+`backend/.env.local` accepts `ENVIRONMENT` (`development`, `test`, or `production`), provider settings, `DEFAULT_MODEL`, `CORS_ORIGINS`, and `LOG_LEVEL` (`DEBUG`, `INFO`, `WARNING`, or `ERROR`). Environment variables override the local file.
+
+For production, set `ENVIRONMENT=production` and explicitly configure HTTPS origins in `CORS_ORIGINS`. The backend rejects wildcard, malformed, and localhost production origins. The development defaults are intended only for local use.
+
 ## Validation
 
 ```powershell
@@ -110,7 +127,7 @@ Additional setup and troubleshooting notes are in [Development](docs/DEVELOPMENT
 
 - Keep credentials in `backend/.env.local` or in the process environment.
 - Do not use secrets in `VITE_*` variables; frontend build-time variables are public.
-- The API's development CORS allowlist is configured with `FORGE_CORS_ORIGINS`.
+- The API's development CORS allowlist is configured with `CORS_ORIGINS`.
 - Workspace permissions, command execution controls, and model-generated tool safety are required before the agent runtime can execute changes. See [Implementation status and steps](docs/IMPLEMENTATION.md).
 
 ## License

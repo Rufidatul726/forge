@@ -50,12 +50,32 @@ Returns the configured default model and whether supported provider settings are
 
 The Ollama `configured` value indicates that an endpoint is configured; it does not prove a model is installed or that the endpoint is reachable. These initial routes do not execute agent tasks.
 
+## Error and request tracing contract
+
+All responses include a server-generated `X-Request-ID`. The ID is also present in request-completion logs and in the JSON body for errors. Validation errors include field locations, error messages, and types, but never echo submitted values. Unexpected errors return a generic message; logs record the exception type without exception text.
+
+Errors use this shape:
+
+```json
+{
+  "error": {"code": "validation_error", "message": "Request validation failed."},
+  "request_id": "...",
+  "details": [
+    {"location": "path.item_id", "message": "Input should be a valid integer", "type": "int_parsing"}
+  ]
+}
+```
+
+`details` is omitted when it does not apply. The OpenAPI document references the shared error schema for route error responses.
+
 ## Configuration and trust boundaries
 
 - Backend settings are loaded from `backend/.env.local` and normal process environment variables. Environment variables take precedence.
 - Frontend settings are loaded by Vite from `frontend/.env.local`.
 - `VITE_*` values are included in browser code and are public. Provider secrets belong only in the backend.
-- `FORGE_CORS_ORIGINS` is a comma-separated development allowlist. Production origins must be explicitly configured.
+- `CORS_ORIGINS` is a comma-separated allowlist. Production requires explicit HTTPS origins and rejects wildcard and localhost origins.
+- `ENVIRONMENT` selects `development`, `test`, or `production`; `LOG_LEVEL` selects the backend log level.
+- The API allows only the methods and headers currently needed by the dashboard and does not enable credentialed CORS.
 - The UI displays backend connection failures; it does not treat an unavailable API as a successful response.
 - Workspace access and generated command/file operations must be permission-gated before execution support is added.
 

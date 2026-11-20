@@ -1,9 +1,10 @@
 from typing import Literal
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
-from forge.config import ForgeSettings
+from forge.api.errors import ERROR_RESPONSES
+from forge.config import ForgeSettings, get_settings
 
 router = APIRouter(prefix="/providers", tags=["providers"])
 
@@ -19,9 +20,8 @@ class ProvidersResponse(BaseModel):
     providers: list[ProviderStatus]
 
 
-@router.get("", response_model=ProvidersResponse)
-def list_providers() -> ProvidersResponse:
-    settings = ForgeSettings()
+@router.get("", response_model=ProvidersResponse, responses=ERROR_RESPONSES)
+def list_providers(settings: ForgeSettings = Depends(get_settings)) -> ProvidersResponse:
     return ProvidersResponse(
         default_model=settings.default_model,
         providers=[
