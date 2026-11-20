@@ -38,6 +38,14 @@ Frontend environment variables:
 
 Production mode requires `CORS_ORIGINS` to be explicitly changed to one or more HTTPS origins. Wildcards and localhost origins are rejected. Keep the local development settings for local use only.
 
+`OLLAMA_HOST` must be an HTTP(S) origin with no embedded credentials, URL path, or query string. To inspect the service and installed models:
+
+```powershell
+uv run --project backend forge models
+```
+
+The Ollama adapter uses a 30-second timeout, limits response bodies to 2 MiB, and caps each generation request at 8,192 tokens. Generation is available to backend callers; it is not exposed as an HTTP or interactive CLI endpoint yet.
+
 ## Run locally
 
 Run the backend in one terminal from the repository root:

@@ -27,6 +27,20 @@ Terminal
 
 The API owns browser-facing contracts and CORS. Provider/model execution, repository context, tools, safety policy, and sessions belong in backend modules; they must not be reimplemented in the frontend.
 
+## Model provider boundary
+
+`backend/src/forge/providers/protocol.py` defines the async `ModelProvider` interface. Provider-neutral chat messages and bounded generation options live in `providers/models.py`; adapters map those models to provider-specific protocols and raise typed errors with safe public messages.
+
+The first adapter is `OllamaProvider`:
+
+- It reads the server-only `OLLAMA_HOST` setting and uses `/api/tags` to list installed models and `/api/chat` for non-streaming generation.
+- Requests have a 30-second timeout, generation is capped at 8,192 tokens, and response bodies are limited to 2 MiB.
+- Network, timeout, HTTP, malformed response, and oversized response failures map to typed provider errors without returning upstream response bodies.
+- Cancellation is not swallowed.
+- `forge models` exercises model discovery. Generation is available to backend callers but is not yet exposed through an API route or wired into the agent/CLI prompt workflow.
+
+Gemini and OpenRouter credentials may be configured but their adapters are not implemented. Provider API keys must remain server-side and must not be included in logs or frontend responses.
+
 ## Current API contract
 
 ### `GET /api/v1/health`
@@ -73,6 +87,7 @@ Errors use this shape:
 - Backend settings are loaded from `backend/.env.local` and normal process environment variables. Environment variables take precedence.
 - Frontend settings are loaded by Vite from `frontend/.env.local`.
 - `VITE_*` values are included in browser code and are public. Provider secrets belong only in the backend.
+- `OLLAMA_HOST` is validated as an HTTP(S) origin; embedded credentials, paths, and query parameters are rejected.
 - `CORS_ORIGINS` is a comma-separated allowlist. Production requires explicit HTTPS origins and rejects wildcard and localhost origins.
 - `ENVIRONMENT` selects `development`, `test`, or `production`; `LOG_LEVEL` selects the backend log level.
 - The API allows only the methods and headers currently needed by the dashboard and does not enable credentialed CORS.

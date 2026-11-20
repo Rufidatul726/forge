@@ -15,12 +15,14 @@ This document is the implementation checklist and handoff point for the project.
 - [x] Add backend CLI/API tests and document setup, boundaries, and commands.
 - [x] Define documented response models and consistent validation, HTTP, and server error responses.
 - [x] Add request IDs, request-completion logging, and validated runtime/CORS settings.
+- [x] Define a provider protocol and provider-neutral generation models.
+- [x] Implement the Ollama adapter with bounded requests, timeouts, cancellation, and safe error mapping.
 
 ### Not implemented yet
 
 - [ ] Agent execution loop and interactive chat endpoint.
-- [ ] Working Ollama, Gemini, and OpenRouter inference adapters.
-- [ ] Shared provider interface, model validation, and provider error handling.
+- [ ] Gemini and OpenRouter inference adapters.
+- [ ] Expose provider generation through an API or user-facing one-shot command.
 - [ ] Repository context, file/search tools, and safe workspace boundaries.
 - [ ] Permission prompts and controlled terminal execution.
 - [ ] Session persistence, resume, and change history.
@@ -28,7 +30,7 @@ This document is the implementation checklist and handoff point for the project.
 - [ ] Frontend automated tests and end-to-end coverage.
 - [ ] Production deployment, authentication, rate limiting, and operational observability.
 
-The current prompt CLI is a placeholder that exits with a clear message. API provider status only reports configuration and does not perform inference.
+The Ollama adapter can list installed models and generate non-streaming text for backend callers. `forge models` checks the local Ollama service. The current prompt CLI is still a placeholder, and provider generation is not exposed through the HTTP API. Gemini and OpenRouter adapters remain planned.
 
 ## Recommended implementation sequence
 
@@ -43,12 +45,13 @@ The current prompt CLI is a placeholder that exits with a clear message. API pro
 
 ### 2. Add model providers
 
-- Introduce a provider protocol in a domain/service module.
-- Implement one provider at a time, beginning with Ollama or the preferred provider.
-- Add timeouts, cancellation, bounded response handling, and safe error mapping.
-- Keep API keys out of logs and all browser payloads.
+- [x] Introduce a provider protocol and provider-neutral generation models.
+- [x] Implement Ollama model discovery and non-streaming generation.
+- [x] Add timeouts, cancellation, bounded response handling, and safe error mapping.
+- [x] Keep provider credentials out of logs and browser payloads.
+- [ ] Implement Gemini and OpenRouter adapters.
 
-**Done when:** a backend test can exercise a configured provider through the shared interface without exposing credentials.
+**Current result:** backend tests exercise Ollama model discovery and generation through the shared interface using a mock transport. Cloud adapters and user-facing generation endpoints remain follow-up work.
 
 ### 3. Build the guarded agent core
 

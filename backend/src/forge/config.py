@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Literal
 from urllib.parse import urlsplit
 
-from pydantic import model_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -25,6 +25,30 @@ class ForgeSettings(BaseSettings):
         extra="ignore",
         validate_default=True,
     )
+
+    @field_validator("ollama_host")
+    @classmethod
+    def validate_ollama_host(cls, value: str) -> str:
+        value = value.strip().rstrip("/")
+        if not value:
+            return value
+
+        parsed = urlsplit(value)
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not parsed.hostname
+            or parsed.path
+            or parsed.query
+            or parsed.fragment
+            or parsed.username
+            or parsed.password
+        ):
+            raise ValueError("OLLAMA_HOST must be an HTTP(S) origin without credentials or a path")
+        try:
+            parsed.port
+        except ValueError as exc:
+            raise ValueError("OLLAMA_HOST contains an invalid port") from exc
+        return value
 
     @model_validator(mode="after")
     def validate_cors_origins(self) -> "ForgeSettings":

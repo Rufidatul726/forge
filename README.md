@@ -11,6 +11,7 @@ forge/
 ├── backend/                 # Python API, CLI, shared application code, tests
 │   ├── src/forge/
 │   │   ├── api/              # FastAPI application and HTTP routes
+│   │   ├── providers/        # Provider interface and model adapters
 │   │   ├── cli.py            # Typer terminal interface
 │   │   └── config.py         # Environment-backed settings
 │   ├── tests/
@@ -31,7 +32,7 @@ See [Architecture](docs/ARCHITECTURE.md), [Development](docs/DEVELOPMENT.md), an
 - [uv](https://docs.astral.sh/uv/)
 - Node.js 20.19+ and npm
 - Git
-- An optional model provider: Ollama, Google Gemini, or OpenRouter
+- Ollama for local inference (Gemini and OpenRouter adapters are not implemented yet)
 
 ## Set up the environment
 
@@ -78,7 +79,9 @@ uv run --project backend forge models
 uv run --project backend forge diff .
 ```
 
-The prompt runner is not implemented yet; `forge -p ...` currently reports that limitation rather than sending a request.
+`forge models` checks the configured Ollama service and lists its installed models. Set `OLLAMA_HOST` in `backend/.env.local` if Ollama is not using its default local address.
+
+The Ollama provider supports bounded, non-streaming text generation through the backend provider interface. The prompt runner and agent loop are not wired up yet; `forge -p ...` reports that limitation rather than sending a request. Gemini and OpenRouter are configuration placeholders until their adapters are implemented.
 
 ## API endpoints
 
@@ -87,7 +90,7 @@ The prompt runner is not implemented yet; `forge -p ...` currently reports that 
 | `GET` | `/api/v1/health` | Check whether the API is responding |
 | `GET` | `/api/v1/providers` | Read the default model and provider configuration status |
 
-These are initial integration endpoints, not the agent execution API.
+These are initial integration endpoints, not the agent execution API. Provider inference is not exposed as an HTTP endpoint yet.
 
 Every API response includes an `X-Request-ID` header. Errors use a consistent JSON contract:
 

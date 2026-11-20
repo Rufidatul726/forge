@@ -1,6 +1,6 @@
+import asyncio
 from pathlib import Path
 
-import httpx
 import typer
 from git import InvalidGitRepositoryError, Repo
 from rich.console import Console
@@ -8,6 +8,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from forge.config import ForgeSettings, forge_directory, instructions_path
+from forge.providers import ProviderError, get_provider
 
 app = typer.Typer(
     name="forge",
@@ -114,22 +115,28 @@ def models() -> None:
     table.add_column("Execution")
     table.add_column("Status")
 
-    ollama_status = "Unavailable"
+    ollama_models: list[str] = []
     try:
-        response = httpx.get(f"{settings.ollama_host}/api/tags", timeout=2.0)
-        if response.is_success:
-            ollama_status = "Available"
-    except httpx.HTTPError:
-        pass
+        ollama_models = asyncio.run(get_provider("ollama", settings).list_models())
+        ollama_status = "Available" if ollama_models else "No models installed"
+    except ProviderError as error:
+        ollama_status = "Unavailable"
+        console.print(f"[yellow]{error.public_message}[/]")
 
     table.add_row("Ollama", "Local", ollama_status)
-    table.add_row("Gemini", "Cloud API", "Configured" if settings.gemini_api_key else "Not configured")
+    table.add_row(
+        "Gemini",
+        "Cloud API",
+        "Configured (adapter pending)" if settings.gemini_api_key else "Not configured",
+    )
     table.add_row(
         "OpenRouter",
         "Cloud API",
-        "Configured" if settings.openrouter_api_key else "Not configured",
+        "Configured (adapter pending)" if settings.openrouter_api_key else "Not configured",
     )
     console.print(table)
+    if ollama_models:
+        console.print(f"Ollama models: {', '.join(ollama_models)}")
 
 
 @app.command()
