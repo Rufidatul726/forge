@@ -30,7 +30,7 @@ This document is the implementation checklist and handoff point for the project.
 - [ ] Full agent execution loop, streaming chat, and user-approved mutations.
 - [x] Add SQLite session persistence, listing, resume, and safe deletion.
 - [ ] Persist project change history after approved workspace writes are connected to sessions.
-- [ ] Frontend chat/session workflow and settings management.
+- [x] Frontend chat/session workflow and settings management.
 - [ ] Frontend automated tests and end-to-end coverage.
 - [ ] Production deployment, authentication, rate limiting, and operational observability.
 
@@ -81,10 +81,12 @@ Ollama, Gemini, and OpenRouter adapters can list models and generate non-streami
 
 ### 5. Connect the web workflow
 
-- Add chat/session endpoints and streaming only after the backend execution contract is stable.
-- Implement session selection, prompt submission, progress, cancellation, and error states.
-- Keep provider credentials and execution policy on the server.
+- [x] Add chat/session endpoints after the backend execution contract.
+- [x] Implement session selection, prompt submission, progress, cancellation, and error states.
+- [x] Keep provider credentials and execution policy on the server.
 - Add frontend unit/component and end-to-end tests for success, failure, offline, and cancellation states.
+
+**Current result:** the React dashboard includes session selection and creation, persistent chat turns, model/context controls, cancellation, loading, offline, and API error states. Tasks remain non-streaming and read-only; the browser does not select the server workspace or expose command execution.
 
 **Done when:** a user can submit a task through the UI, follow execution, inspect changes, and see an honest failure state.
 

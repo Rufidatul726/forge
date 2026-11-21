@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import type { FormEvent } from 'react'
 
 import './App.css'
 
@@ -15,7 +16,29 @@ type ProvidersResponse = {
   providers: Provider[]
 }
 
+type SessionSummary = {
+  id: string
+  title: string
+  created_at: string
+  updated_at: string
+  turn_count: number
+}
+
+type SessionTurn = {
+  role: string
+  content: string
+  created_at: string
+}
+
+type SessionDetail = SessionSummary & {
+  turns: SessionTurn[]
+  outcomes: unknown[]
+}
+
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? 'http://127.0.0.1:8000/api/v1'
+const configuredApiKey = import.meta.env.VITE_FORGE_API_KEY ?? ''
+
+type View = 'overview' | 'sessions' | 'settings'
 
 const providerLabels: Record<Provider['name'], string> = {
   ollama: 'Ollama',
@@ -28,6 +51,16 @@ function App() {
   const [providers, setProviders] = useState<Provider[]>([])
   const [defaultModel, setDefaultModel] = useState('ollama')
   const [error, setError] = useState<string | null>(null)
+  const [view, setView] = useState<View>('overview')
+  const [sessions, setSessions] = useState<SessionSummary[]>([])
+  const [activeSession, setActiveSession] = useState<SessionDetail | null>(null)
+  const [prompt, setPrompt] = useState('')
+  const [model, setModel] = useState('qwen2.5-coder:7b')
+  const [contextPaths, setContextPaths] = useState('')
+  const [apiKey, setApiKey] = useState(configuredApiKey)
+  const [workspaceError, setWorkspaceError] = useState<string | null>(null)
+  const [running, setRunning] = useState(false)
+  const taskController = useRef<AbortController | null>(null)
 
   useEffect(() => {
     const controller = new AbortController()
@@ -64,6 +97,159 @@ function App() {
     return () => controller.abort()
   }, [])
 
+  useEffect(() => {
+    if (view !== 'sessions' || !apiKey) return
+
+    const controller = new AbortController()
+    void (async () => {
+      try {
+        const response = await fetch(`${apiBaseUrl}/sessions`, {
+          signal: controller.signal,
+          headers: {
+            Authorization: `Bearer ${apiKey}`,
+          },
+        })
+        if (!response.ok) throw new Error('Could not load sessions.')
+        setSessions((await response.json()) as SessionSummary[])
+        setWorkspaceError(null)
+      } catch (requestError) {
+        if (controller.signal.aborted) return
+        setWorkspaceError(requestError instanceof Error ? requestError.message : 'Could not load sessions.')
+      }
+    })()
+    return () => controller.abort()
+  }, [view, apiKey])
+
+  async function apiFetch(path: string, options: RequestInit = {}) {
+    if (!apiKey) throw new Error('Configure a Forge API key in Settings.')
+
+    const headers = new Headers(options.headers)
+    headers.set('Content-Type', 'application/json')
+    headers.set('Authorization', `Bearer ${apiKey}`)
+    const response = await fetch(`${apiBaseUrl}${path}`, {
+      ...options,
+      headers,
+    })
+
+    if (!response.ok) {
+      let message = 'The Forge API could not complete the request.'
+      try {
+        const payload = (await response.json()) as { error?: { message?: string } }
+        if (payload.error?.message) message = payload.error.message
+      } catch {
+        // Keep the safe fallback for non-JSON responses.
+      }
+      throw new Error(message)
+    }
+
+    if (response.status === 204) return null
+    return response.json()
+  }
+
+  async function fetchSessions(signal?: AbortSignal) {
+    try {
+      const data = (await apiFetch('/sessions', { signal })) as SessionSummary[]
+      setSessions(data)
+      setWorkspaceError(null)
+    } catch (requestError) {
+      if (signal?.aborted) return
+      setWorkspaceError(requestError instanceof Error ? requestError.message : 'Could not load sessions.')
+    }
+  }
+
+  async function createSession() {
+    setWorkspaceError(null)
+    try {
+      const summary = (await apiFetch('/sessions', {
+        method: 'POST',
+        body: JSON.stringify({ title: 'New chat' }),
+      })) as SessionSummary
+      const detail = (await apiFetch(`/sessions/${summary.id}`)) as SessionDetail
+      setSessions((current) => [summary, ...current])
+      setActiveSession(detail)
+      setView('sessions')
+    } catch (requestError) {
+      setWorkspaceError(requestError instanceof Error ? requestError.message : 'Could not create a session.')
+    }
+  }
+
+  async function selectSession(sessionId: string) {
+    setWorkspaceError(null)
+    try {
+      const detail = (await apiFetch(`/sessions/${sessionId}`)) as SessionDetail
+      setActiveSession(detail)
+    } catch (requestError) {
+      setWorkspaceError(requestError instanceof Error ? requestError.message : 'Could not open the session.')
+    }
+  }
+
+  async function deleteSession(sessionId: string) {
+    setWorkspaceError(null)
+    try {
+      await apiFetch(`/sessions/${sessionId}`, { method: 'DELETE' })
+      setSessions((current) => current.filter((session) => session.id !== sessionId))
+      if (activeSession?.id === sessionId) setActiveSession(null)
+    } catch (requestError) {
+      setWorkspaceError(requestError instanceof Error ? requestError.message : 'Could not delete the session.')
+    }
+  }
+
+  async function submitPrompt(event: FormEvent) {
+    event.preventDefault()
+    const content = prompt.trim()
+    if (!content || running) return
+
+    setWorkspaceError(null)
+    setRunning(true)
+    const controller = new AbortController()
+    taskController.current = controller
+
+    try {
+      let sessionId = activeSession?.id
+      if (!sessionId) {
+        const summary = (await apiFetch('/sessions', {
+          method: 'POST',
+          body: JSON.stringify({ title: content.slice(0, 120) }),
+          signal: controller.signal,
+        })) as SessionSummary
+        sessionId = summary.id
+      }
+
+      await apiFetch('/agent/tasks', {
+        method: 'POST',
+        signal: controller.signal,
+        body: JSON.stringify({
+          model,
+          messages: [{ role: 'user', content }],
+          context_paths: contextPaths
+            .split(',')
+            .map((path) => path.trim())
+            .filter(Boolean)
+            .slice(0, 10),
+          session_id: sessionId,
+          max_tokens: 1024,
+        }),
+      })
+
+      setPrompt('')
+      await selectSession(sessionId)
+      void fetchSessions()
+    } catch (requestError) {
+      if (controller.signal.aborted) {
+        setWorkspaceError('Task cancelled.')
+      } else {
+        setWorkspaceError(requestError instanceof Error ? requestError.message : 'Could not run the task.')
+      }
+    } finally {
+      setRunning(false)
+      taskController.current = null
+    }
+  }
+
+  function cancelTask() {
+    taskController.current?.abort()
+  }
+
   return (
     <div className="app-shell">
       <aside className="sidebar">
@@ -74,20 +260,18 @@ function App() {
 
         <div className="sidebar-label">WORKSPACE</div>
         <nav className="navigation" aria-label="Main navigation">
-          <a className="nav-item active" href="#overview" aria-current="page">
+          <button className={`nav-item ${view === 'overview' ? 'active' : ''}`} onClick={() => setView('overview')} aria-current={view === 'overview' ? 'page' : undefined}>
             <span className="nav-icon">⌂</span>
             Overview
-          </a>
-          <span className="nav-item disabled" aria-disabled="true">
+          </button>
+          <button className={`nav-item ${view === 'sessions' ? 'active' : ''}`} onClick={() => setView('sessions')} aria-current={view === 'sessions' ? 'page' : undefined}>
             <span className="nav-icon">◷</span>
             Sessions
-            <span className="nav-soon">Soon</span>
-          </span>
-          <span className="nav-item disabled" aria-disabled="true">
+          </button>
+          <button className={`nav-item ${view === 'settings' ? 'active' : ''}`} onClick={() => setView('settings')} aria-current={view === 'settings' ? 'page' : undefined}>
             <span className="nav-icon">⚙</span>
             Settings
-            <span className="nav-soon">Soon</span>
-          </span>
+          </button>
         </nav>
 
         <div className="sidebar-footer">
@@ -102,13 +286,14 @@ function App() {
           <div className="breadcrumb">
             <span>Workspace</span>
             <span className="breadcrumb-separator">/</span>
-            <strong>Overview</strong>
+            <strong>{view === 'overview' ? 'Overview' : view === 'sessions' ? 'Sessions' : 'Settings'}</strong>
           </div>
           <a className="docs-link" href="https://github.com/Rufidatul726/forge">
             Project repository <span aria-hidden="true">↗</span>
           </a>
         </header>
 
+        {view === 'overview' ? (
         <div className="content">
           <section className="welcome">
             <div className="eyebrow"><span className="eyebrow-line" /> YOUR ENGINEERING SPACE</div>
@@ -186,6 +371,122 @@ function App() {
             <a href="http://127.0.0.1:8000/docs">API documentation <span aria-hidden="true">↗</span></a>
           </footer>
         </div>
+        ) : view === 'sessions' ? (
+          <div className="chat-layout">
+            <aside className="session-list" aria-label="Chat sessions">
+              <div className="session-list-heading">
+                <span>SESSIONS</span>
+                <button className="icon-button" type="button" onClick={() => void createSession()} title="New session">+</button>
+              </div>
+              <div className="session-items">
+                {sessions.map((session) => (
+                  <button
+                    className={`session-item ${activeSession?.id === session.id ? 'active' : ''}`}
+                    key={session.id}
+                    type="button"
+                    onClick={() => void selectSession(session.id)}
+                  >
+                    <strong>{session.title}</strong>
+                    <span>{session.turn_count} turns</span>
+                  </button>
+                ))}
+                {sessions.length === 0 && <p className="session-empty">No saved sessions.</p>}
+              </div>
+            </aside>
+
+            <section className="chat-panel" aria-label="Agent chat">
+              <div className="chat-heading">
+                <div>
+                  <span className="card-label">AGENT TASK</span>
+                  <h1>{activeSession?.title ?? 'New conversation'}</h1>
+                </div>
+                {activeSession && (
+                  <button className="delete-button" type="button" onClick={() => void deleteSession(activeSession.id)}>
+                    Delete
+                  </button>
+                )}
+              </div>
+
+              {workspaceError && <p className="chat-error" role="alert">{workspaceError}</p>}
+
+              <div className="messages" aria-live="polite">
+                {activeSession?.turns.map((turn, index) => (
+                  <article className={`message ${turn.role}`} key={`${turn.created_at}-${index}`}>
+                    <span>{turn.role === 'assistant' ? 'Forge' : 'You'}</span>
+                    <p>{turn.content}</p>
+                  </article>
+                ))}
+                {!activeSession?.turns.length && (
+                  <div className="chat-empty">
+                    <span className="chat-empty-mark">F</span>
+                    <h2>Ask about your workspace</h2>
+                    <p>Forge uses bounded repository context and a read-only task workflow.</p>
+                  </div>
+                )}
+              </div>
+
+              <form className="prompt-form" onSubmit={(event) => void submitPrompt(event)}>
+                <div className="prompt-options">
+                  <label>
+                    Model
+                    <input value={model} onChange={(event) => setModel(event.target.value)} placeholder="qwen2.5-coder:7b" />
+                  </label>
+                  <label className="context-input">
+                    Context files
+                    <input value={contextPaths} onChange={(event) => setContextPaths(event.target.value)} placeholder="src/main.py, README.md" />
+                  </label>
+                </div>
+                <div className="prompt-row">
+                  <textarea
+                    value={prompt}
+                    onChange={(event) => setPrompt(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter' && !event.shiftKey) {
+                        event.preventDefault()
+                        event.currentTarget.form?.requestSubmit()
+                      }
+                    }}
+                    placeholder="Ask Forge to review or explain the codebase…"
+                    aria-label="Task prompt"
+                    rows={3}
+                  />
+                  {running ? (
+                    <button className="send-button cancel" type="button" onClick={cancelTask}>Cancel</button>
+                  ) : (
+                    <button className="send-button" type="submit" disabled={!prompt.trim() || !apiKey}>
+                      Run
+                    </button>
+                  )}
+                </div>
+              </form>
+            </section>
+          </div>
+        ) : (
+          <div className="content settings-content">
+            <section className="settings-panel">
+              <div className="eyebrow"><span className="eyebrow-line" /> LOCAL CONFIGURATION</div>
+              <h1>Settings</h1>
+              <p>Use a server API key only in a trusted local frontend environment. Vite variables are exposed to the browser.</p>
+              <label className="settings-field">
+                Forge API key
+                <input
+                  type="password"
+                  value={apiKey}
+                  onChange={(event) => setApiKey(event.target.value)}
+                  placeholder="Enter FORGE_API_KEY"
+                  autoComplete="off"
+                />
+              </label>
+              <button className="primary-button" type="button" onClick={() => {
+                setWorkspaceError(apiKey ? null : 'An API key is required.')
+                if (apiKey) setView('sessions')
+              }}>
+                Save and open sessions
+              </button>
+              {workspaceError && <p className="chat-error" role="alert">{workspaceError}</p>}
+            </section>
+          </div>
+        )}
       </main>
     </div>
   )

@@ -37,6 +37,7 @@ Frontend environment variables:
 | Variable | Default | Description |
 |---|---|---|
 | `VITE_API_BASE_URL` | `http://127.0.0.1:8000/api/v1` | Versioned backend API base URL |
+| `VITE_FORGE_API_KEY` | empty | Optional local-development API key; visible to the browser |
 
 Generate an API key with `uv run --project backend python -c "import secrets; print(secrets.token_urlsafe(32))"`. Store it in `backend/.env.local`; do not commit it or put it in a `VITE_*` setting. The generation API requires this key in an `Authorization: Bearer ...` header and returns `503` until configured. Production mode requires both `FORGE_API_KEY` and `CORS_ORIGINS` with one or more HTTPS origins. Wildcards and localhost origins are rejected. Keep the local development settings for local use only.
 

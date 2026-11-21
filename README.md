@@ -2,7 +2,7 @@
 
 **Your code. Your models. Your agent.**
 
-Forge is an early-stage, model-agnostic coding agent project with a Python backend, a separate React web frontend, and a terminal CLI. The web dashboard currently reports API and provider configuration status; the agent runtime and interactive coding workflow are not implemented yet.
+Forge is an early-stage, model-agnostic coding agent project with a Python backend, a separate React web frontend, and a terminal CLI. The dashboard reports API/provider status, and the frontend provides a read-only chat workflow backed by persistent sessions.
 
 ## Project layout
 
@@ -69,6 +69,11 @@ npm run dev
 ```
 
 Open the local URL printed by Vite, normally `http://localhost:5173`.
+
+For local chat and session routes, set `VITE_FORGE_API_KEY` or enter the
+`FORGE_API_KEY` value in the frontend Settings view. Vite variables are public
+browser configuration, so never use this approach for a shared or production
+deployment.
 
 ### Use the CLI
 
