@@ -238,6 +238,116 @@ def test_generation_endpoint_dispatches_to_configured_cloud_provider(
     assert selected_names == [provider_name]
 
 
+def test_agent_task_requires_an_api_key_and_configured_workspace(tmp_path):
+    payload = {
+        "model": "qwen2.5-coder:7b",
+        "messages": [{"role": "user", "content": "Summarize the repository."}],
+    }
+    api_key = "a" * 40
+    unconfigured = request(
+        create_app(ForgeSettings(_env_file=None, forge_api_key=api_key)),
+        "POST",
+        "/api/v1/agent/tasks",
+        headers={"Authorization": f"Bearer {api_key}"},
+        json_body=payload,
+    )
+    unauthorized = request(
+        create_app(
+            ForgeSettings(
+                _env_file=None,
+                forge_api_key=api_key,
+                agent_workspace_root=tmp_path,
+            )
+        ),
+        "POST",
+        "/api/v1/agent/tasks",
+        json_body=payload,
+    )
+
+    assert unconfigured.status_code == 503
+    assert unauthorized.status_code == 401
+
+
+def test_agent_task_uses_only_configured_read_only_workspace(monkeypatch, tmp_path):
+    from forge.providers.models import GenerationResult
+
+    (tmp_path / "main.py").write_text("print('hello')\n", encoding="utf-8")
+    (tmp_path / ".env").write_text("TOKEN=private", encoding="utf-8")
+    (tmp_path / "FORGE.md").write_text("Use focused answers.", encoding="utf-8")
+
+    captured_messages = []
+
+    class FakeProvider:
+        async def generate(self, payload):
+            captured_messages.extend(payload.messages)
+            return GenerationResult(model=payload.model, content="Repository summary", done=True)
+
+    monkeypatch.setattr("forge.api.routes.agent.get_provider", lambda name, settings: FakeProvider())
+    api_key = "a" * 40
+    response = request(
+        create_app(
+            ForgeSettings(
+                _env_file=None,
+                forge_api_key=api_key,
+                agent_workspace_root=tmp_path,
+            )
+        ),
+        "POST",
+        "/api/v1/agent/tasks",
+        headers={"Authorization": f"Bearer {api_key}"},
+        json_body={
+            "model": "qwen2.5-coder:7b",
+            "messages": [{"role": "user", "content": "Explain main.py"}],
+            "context_paths": ["main.py"],
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "generation": {
+            "model": "qwen2.5-coder:7b",
+            "content": "Repository summary",
+            "done": True,
+        },
+        "workspace_root": str(tmp_path.resolve()),
+        "context_paths": ["main.py"],
+        "read_only": True,
+    }
+    context = captured_messages[0].content
+    assert "File: main.py\nprint('hello')" in context
+    assert "Use focused answers." in context
+    assert "TOKEN=private" not in context
+    assert (tmp_path / "main.py").read_text(encoding="utf-8") == "print('hello')\n"
+
+
+def test_agent_task_rejects_context_paths_outside_workspace(monkeypatch, tmp_path):
+    outside_path = tmp_path.parent / f"{tmp_path.name}-outside.txt"
+    outside_path.write_text("private", encoding="utf-8")
+    monkeypatch.setattr("forge.api.routes.agent.get_provider", lambda name, settings: None)
+    api_key = "a" * 40
+
+    response = request(
+        create_app(
+            ForgeSettings(
+                _env_file=None,
+                forge_api_key=api_key,
+                agent_workspace_root=tmp_path,
+            )
+        ),
+        "POST",
+        "/api/v1/agent/tasks",
+        headers={"Authorization": f"Bearer {api_key}"},
+        json_body={
+            "model": "qwen2.5-coder:7b",
+            "messages": [{"role": "user", "content": "Read a file"}],
+            "context_paths": ["../outside.txt"],
+        },
+    )
+
+    assert response.status_code == 422
+    assert "private" not in response.text
+
+
 def test_unknown_route_returns_stable_error_contract(app: FastAPI):
     response = request(app, "GET", "/api/v1/unknown")
 

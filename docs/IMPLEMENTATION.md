@@ -23,16 +23,17 @@ This document is the implementation checklist and handoff point for the project.
 - [x] Expose workspace operations through `forge files`, `forge read`, `forge search`, and `forge write`.
 - [x] Add controlled terminal execution with an executable allowlist, exact-command approval, bounded output, timeout/cancellation cleanup, and redacted audit logs.
 - [x] Expose bounded Ollama generation through an API-key-protected API endpoint.
+- [x] Add a stateless, authenticated, read-only workspace task endpoint.
 
 ### Not implemented yet
 
-- [ ] Agent execution loop and interactive chat endpoint.
+- [ ] Full agent execution loop, streaming chat, and user-approved mutations.
 - [ ] Session persistence, resume, and change history.
 - [ ] Frontend chat/session workflow and settings management.
 - [ ] Frontend automated tests and end-to-end coverage.
 - [ ] Production deployment, authentication, rate limiting, and operational observability.
 
-Ollama, Gemini, and OpenRouter adapters can list models and generate non-streaming text. `POST /api/v1/generate` exposes bounded generation behind `FORGE_API_KEY`; the prompt CLI and agent loop remain placeholders.
+Ollama, Gemini, and OpenRouter adapters can list models and generate non-streaming text. `POST /api/v1/generate` exposes bounded generation behind `FORGE_API_KEY`; `POST /api/v1/agent/tasks` provides an initial read-only, stateless repository task workflow. The prompt CLI and full agent loop remain placeholders.
 
 ## Recommended implementation sequence
 
@@ -63,9 +64,9 @@ Ollama, Gemini, and OpenRouter adapters can list models and generate non-streami
 - [x] Add diff-previewed writes requiring explicit approval, with stale-content detection and auditable results.
 - [x] Connect CLI workspace operations to the shared workspace service.
 - [x] Add subprocess execution controls, timeouts, cancellation, and audit results.
-- [ ] Connect authenticated API workflows to shared agent services.
+- [x] Connect authenticated API workflows to shared read-only agent services.
 
-**Current result:** workspace reads/searches are bounded; file writes require an explicit approval callback and are previewed in the CLI. Sensitive paths, symlink write targets, traversal, oversized content, and stale proposals are rejected. `forge run` accepts a narrow executable allowlist and requires default-no confirmation of the resolved executable and exact arguments on every run. Commands are shell-free, workspace-cwd bounded, timeout-limited, output-capped, and inherit only an environment allowlist. The agent loop remains unavailable, and command approval is not an OS sandbox.
+**Current result:** workspace reads/searches are bounded; file writes require an explicit approval callback and are previewed in the CLI. Sensitive paths, symlink write targets, traversal, oversized content, and stale proposals are rejected. `forge run` accepts a narrow executable allowlist and requires default-no confirmation of the resolved executable and exact arguments on every run. Commands are shell-free, workspace-cwd bounded, timeout-limited, output-capped, and inherit only an environment allowlist. The API supports authenticated, read-only tasks against an explicit server-configured root; writes, commands, sessions, streaming, and autonomous tool loops remain unavailable. Command approval is not an OS sandbox.
 
 **Done when:** a bounded task can run against a test workspace, with denied actions remaining non-mutating and all changes inspectable.
 

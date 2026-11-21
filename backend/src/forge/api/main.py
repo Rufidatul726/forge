@@ -15,7 +15,7 @@ from forge.api.errors import (
     handle_unexpected_error,
     handle_validation_error,
 )
-from forge.api.routes import generation, health, providers
+from forge.api.routes import agent, generation, health, providers
 from forge.config import ForgeSettings, get_settings
 from forge.providers.errors import ProviderError
 
@@ -71,6 +71,7 @@ def create_app(settings: ForgeSettings | None = None) -> FastAPI:
     application.add_exception_handler(Exception, handle_unexpected_error)
 
     application.include_router(generation.router, prefix="/api/v1")
+    application.include_router(agent.router, prefix="/api/v1")
     application.include_router(health.router, prefix="/api/v1")
     application.include_router(providers.router, prefix="/api/v1")
     return application

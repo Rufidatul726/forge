@@ -48,6 +48,8 @@ Provider API keys must remain server-side and must not be included in logs or fr
 
 The CLI exposes these capabilities as `forge files`, `forge read`, `forge search`, and `forge write`. Writes are proposed as a unified diff and require an explicit confirmation callback; the operation rechecks the previous content hash after approval, writes through a temporary file followed by atomic replacement, and returns/logs hashes and byte counts without file contents. Write targets must not be symlinks and their parent directories must already exist.
 
+`POST /api/v1/agent/tasks` reuses the same `Workspace` service for a stateless, read-only task. Its root comes only from server-side `AGENT_WORKSPACE_ROOT`; callers may request up to 10 workspace-relative context files, while the service also provides a bounded file list and optional `FORGE.md`. The route never invokes workspace writes or command execution.
+
 `backend/src/forge/execution/commands.py` implements `forge run`. It allows only `git`, `npm`, `node`, `python`, `python3`, `pytest`, `ruff`, and `uv`; rejects executable paths and shell interpreters; invokes processes without a shell; requires a per-command approval callback; and limits arguments, execution time, and captured output. The CLI shows the resolved executable, full argument vector, workspace-relative cwd, and timeout before prompting with a default of no. The process receives only a small environment allowlist plus `PYTHONIOENCODING` and `UV_OFFLINE`; audit records omit arguments and process output. Timeouts and cancellation terminate the process group on POSIX and use Windows `taskkill /T /F` with parent-process fallback. Workspace cwd restrictions and explicit approval are not a security sandbox: approved programs still run with the current user's OS permissions. Command execution is currently CLI-only and is not exposed through the HTTP API.
 
 ## Current API contract
@@ -77,6 +79,10 @@ The Ollama `configured` value indicates that an endpoint is configured; it does 
 
 Requires `Authorization: Bearer <FORGE_API_KEY>`. The configured key must be at least 32 characters, and production settings require it. The request uses the provider-neutral `GenerationRequest` schema (`model`, 1-64 messages, and `max_tokens` from 1 to 8,192); individual message content is capped at 64,000 characters. The route dispatches to the configured `DEFAULT_MODEL` provider (`ollama`, `gemini`, or `openrouter`). Success returns a `GenerationResult` with the model, assistant content, and completion flag. Authentication failures, unsupported providers, provider failures, and timeouts use the common error envelope with 401, 501, 502/503, or 504 status codes. The endpoint does not read or modify workspaces and does not execute commands.
 
+### `POST /api/v1/agent/tasks`
+
+Requires `Authorization: Bearer <FORGE_API_KEY>` and a server-configured `AGENT_WORKSPACE_ROOT`. The request accepts a model, 1-32 provider-neutral chat messages, an output limit, and up to 10 workspace-relative context paths. The service builds bounded, read-only context from the configured workspace and sends it to the selected provider. It returns the generation result, configured workspace root, context paths, and `read_only: true`. It does not accept arbitrary filesystem roots, write files, execute commands, persist sessions, or stream output.
+
 ## Error and request tracing contract
 
 All responses include a server-generated `X-Request-ID`. The ID is also present in request-completion logs and in the JSON body for errors. Validation errors include field locations, error messages, and types, but never echo submitted values. Unexpected errors return a generic message; logs record the exception type without exception text.
@@ -103,10 +109,11 @@ Errors use this shape:
 - `OLLAMA_HOST` is validated as an HTTP(S) origin; embedded credentials, paths, and query parameters are rejected.
 - `CORS_ORIGINS` is a comma-separated allowlist. Production requires explicit HTTPS origins and rejects wildcard and localhost origins.
 - `FORGE_API_KEY` is a server-only bearer key for model generation; production requires a key of at least 32 characters.
+- `AGENT_WORKSPACE_ROOT` is a server-only, explicit root for the read-only agent task endpoint; callers cannot override it.
 - `ENVIRONMENT` selects `development`, `test`, or `production`; `LOG_LEVEL` selects the backend log level.
 - The API allows GET and POST plus the Authorization header and does not enable credentialed CORS.
 - The UI displays backend connection failures; it does not treat an unavailable API as a successful response.
-- Workspace writes and CLI commands require explicit approval; neither capability is exposed through the HTTP API. Generation is separately protected by the API key.
+- Workspace writes and CLI commands require explicit approval; neither capability is exposed through the HTTP API. The agent task route is read-only, and generation is separately protected by the API key.
 
 ## Extension conventions
 

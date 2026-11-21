@@ -17,6 +17,7 @@ class ForgeSettings(BaseSettings):
     openrouter_api_key: SecretStr | None = None
     ollama_host: str = "http://127.0.0.1:11434"
     default_model: str = "ollama"
+    agent_workspace_root: Path | None = None
     cors_origins: str = "http://localhost:5173"
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
 
@@ -26,7 +27,13 @@ class ForgeSettings(BaseSettings):
         validate_default=True,
     )
 
-    @field_validator("forge_api_key", "gemini_api_key", "openrouter_api_key", mode="before")
+    @field_validator(
+        "forge_api_key",
+        "gemini_api_key",
+        "openrouter_api_key",
+        "agent_workspace_root",
+        mode="before",
+    )
     @classmethod
     def empty_api_key_is_unset(cls, value: object) -> object:
         return None if value == "" else value

@@ -101,6 +101,7 @@ Ollama, Gemini, and OpenRouter support bounded, non-streaming text generation th
 | `GET` | `/api/v1/health` | Check whether the API is responding |
 | `GET` | `/api/v1/providers` | Read the default model and provider configuration status |
 | `POST` | `/api/v1/generate` | Generate a bounded response using the configured provider |
+| `POST` | `/api/v1/agent/tasks` | Run a read-only repository task in the configured workspace |
 
 Generation requires `Authorization: Bearer <FORGE_API_KEY>`. Set `FORGE_API_KEY` to a random value of at least 32 characters in `backend/.env.local`; production settings require it. The endpoint accepts at most 64 messages (up to 64,000 characters each) and limits generated output to 8,192 tokens. It does not expose workspace access or command execution.
 
@@ -115,6 +116,18 @@ Example request body:
 ```
 
 These are initial integration endpoints, not the agent execution API.
+
+### Read-only agent tasks
+
+`POST /api/v1/agent/tasks` requires the same bearer API key as generation and an explicit server-side `AGENT_WORKSPACE_ROOT`. The client cannot select the workspace root. It accepts a model, up to 32 chat messages, and up to 10 workspace-relative `context_paths`; Forge includes the bounded file list, optional `FORGE.md`, and requested readable files in the model context. It cannot write files, execute commands, create sessions, or stream responses.
+
+```json
+{
+  "model": "qwen2.5-coder:7b",
+  "messages": [{"role": "user", "content": "Explain main.py"}],
+  "context_paths": ["main.py"]
+}
+```
 
 Every API response includes an `X-Request-ID` header. Errors use a consistent JSON contract:
 

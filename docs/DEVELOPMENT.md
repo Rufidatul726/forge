@@ -28,6 +28,7 @@ Backend environment variables:
 | `OPENROUTER_API_KEY` | empty | OpenRouter credential for the OpenRouter REST adapter |
 | `OLLAMA_HOST` | `http://127.0.0.1:11434` | Ollama endpoint |
 | `DEFAULT_MODEL` | `ollama` | Generation provider: `ollama`, `gemini`, or `openrouter` |
+| `AGENT_WORKSPACE_ROOT` | empty | Required server-side workspace root for read-only `POST /api/v1/agent/tasks` |
 | `CORS_ORIGINS` | `http://localhost:5173` | Comma-separated allowed browser origins |
 | `LOG_LEVEL` | `INFO` | Backend log level: `DEBUG`, `INFO`, `WARNING`, or `ERROR` |
 
@@ -46,6 +47,8 @@ uv run --project backend forge models
 ```
 
 All provider adapters use a 30-second timeout, limit response bodies to 2 MiB, and cap each generation request at 8,192 tokens. Authenticated generation is available at `POST /api/v1/generate`; the CLI prompt workflow and agent loop are not connected to it yet.
+
+To enable the initial read-only API task workflow, set `AGENT_WORKSPACE_ROOT` to the repository directory on the server. The API never accepts a workspace root from the caller. Requests can include up to 10 safe, workspace-relative context paths; they cannot write files or execute commands.
 
 ## Run locally
 
