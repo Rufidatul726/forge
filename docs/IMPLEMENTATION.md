@@ -28,13 +28,14 @@ This document is the implementation checklist and handoff point for the project.
 ### Not implemented yet
 
 - [ ] Full agent execution loop, streaming chat, and user-approved mutations.
+- [x] Connect the CLI prompt runner to the read-only agent service and persistent sessions.
 - [x] Add SQLite session persistence, listing, resume, and safe deletion.
 - [ ] Persist project change history after approved workspace writes are connected to sessions.
 - [x] Frontend chat/session workflow and settings management.
 - [ ] Frontend automated tests and end-to-end coverage.
 - [ ] Production deployment, authentication, rate limiting, and operational observability.
 
-Ollama, Gemini, and OpenRouter adapters can list models and generate non-streaming text. `POST /api/v1/generate` exposes bounded generation behind `FORGE_API_KEY`; `POST /api/v1/agent/tasks` provides an initial read-only, stateless repository task workflow. The prompt CLI and full agent loop remain placeholders.
+Ollama, Gemini, and OpenRouter adapters can list models and generate non-streaming text. `POST /api/v1/generate` exposes bounded generation behind `FORGE_API_KEY`; `POST /api/v1/agent/tasks` provides an initial read-only repository task workflow. `forge -p` runs the same guarded read-only service and persists successful turns locally. Full agent execution, streaming chat, and mutations remain unimplemented.
 
 ## Recommended implementation sequence
 

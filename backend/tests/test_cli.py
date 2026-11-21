@@ -17,11 +17,27 @@ def test_init_creates_instructions(tmp_path):
     assert (tmp_path / ".forge").is_dir()
 
 
-def test_prompt_reports_unimplemented_runner(tmp_path, monkeypatch):
+def test_prompt_runs_read_only_agent_task_and_persists_session(tmp_path, monkeypatch):
+    (tmp_path / "main.py").write_text("print('hello')\n", encoding="utf-8")
+
+    class FakeProvider:
+        async def generate(self, payload):
+            from forge.providers.models import GenerationResult
+
+            assert payload.messages[0].role == "system"
+            assert "main.py" in payload.messages[0].content
+            return GenerationResult(
+                model=payload.model,
+                content="The repository has a main.py entry point.",
+                done=True,
+            )
+
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("forge.cli.get_provider", lambda name, settings: FakeProvider())
     result = runner.invoke(app, ["-p", "Explain this repository"])
-    assert result.exit_code == 2
-    assert "prompt runner is not implemented" in result.stdout
+    assert result.exit_code == 0
+    assert "The repository has a main.py entry point." in result.stdout
+    assert "Session:" in result.stdout
 
 
 def test_diff_outside_repository(tmp_path):

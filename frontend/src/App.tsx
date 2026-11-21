@@ -309,11 +309,11 @@ function App() {
             <h1>Your ideas,<br /><span>under construction.</span></h1>
             <p className="welcome-copy">
               Forge brings your models and codebase together. The workspace is taking shape;
-              the agent runtime is the next milestone.
+              the read-only agent runtime is available now.
             </p>
             <div className="runtime-note">
               <span className="runtime-indicator" />
-              <span><strong>Agent runtime</strong> is not available yet</span>
+              <span><strong>Agent runtime</strong> is ready for read-only tasks</span>
             </div>
           </section>
 

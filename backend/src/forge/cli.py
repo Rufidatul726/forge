@@ -11,7 +11,9 @@ from rich.text import Text
 from forge.config import ForgeSettings, forge_directory, instructions_path
 from forge.context import Workspace, WorkspaceError, WriteProposal
 from forge.execution import CommandError, CommandProposal, CommandRunner
+from forge.agent import AgentService, AgentTaskRequest
 from forge.providers import ProviderError, get_provider
+from forge.providers.models import ChatMessage
 from forge.sessions import SessionNotFoundError, SessionStore
 
 app = typer.Typer(
@@ -60,11 +62,67 @@ def main(
                 border_style="cyan",
             )
         )
-        console.print(
-            "[yellow]The prompt runner is not implemented yet.[/] "
-            "Use [bold]forge init[/] to create project instructions."
-        )
-        raise typer.Exit(code=2)
+        model_name = {
+            "ollama": "qwen2.5-coder:7b",
+            "gemini": "gemini-2.5-pro",
+            "openrouter": "qwen/qwen3-coder",
+        }.get(settings.default_model, settings.default_model)
+        try:
+            provider = get_provider(settings.default_model, settings)
+            task_messages = [ChatMessage(role="user", content=prompt)]
+            store = SessionStore(root)
+
+            session = None
+            if continue_session:
+                sessions = store.list(limit=100)
+                if sessions:
+                    session = store.get(sessions[0].id)
+                    task_messages = [
+                        ChatMessage(role=turn.role, content=turn.content)
+                        for turn in session.turns
+                    ] + task_messages
+                    if len(task_messages) > 32:
+                        task_messages = task_messages[-32:]
+                    session_id = sessions[0].id
+                else:
+                    session = None
+                    session_id = None
+            else:
+                session_id = None
+
+            if session_id is None:
+                summary = store.create(prompt[:120])
+                session_id = summary.id
+
+            result = asyncio.run(
+                AgentService(root, provider).run(
+                    AgentTaskRequest(
+                        model=model_name,
+                        messages=task_messages,
+                        max_tokens=1024,
+                    )
+                )
+            )
+            store.append_turns(
+                session_id,
+                [ChatMessage(role="user", content=prompt)],
+            )
+            store.append_turns(
+                session_id,
+                [ChatMessage(role="assistant", content=result.generation.content)],
+            )
+            store.append_outcome(
+                session_id,
+                "generation",
+                {"model": result.generation.model, "done": result.generation.done},
+            )
+            console.print(result.generation.content, markup=False)
+            console.print(f"[dim]Session: {session_id}[/]")
+        except (ProviderError, WorkspaceError, SessionNotFoundError, ValueError) as error:
+            message = getattr(error, "public_message", str(error))
+            console.print(f"[red]Could not run prompt:[/] {message}")
+            raise typer.Exit(code=1) from error
+        return
 
     if continue_session:
         console.print("[yellow]No saved session is available yet.[/] ")

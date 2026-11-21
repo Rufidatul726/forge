@@ -97,7 +97,7 @@ uv run --project backend forge diff .
 
 `forge run` allows only `git`, `npm`, `node`, `python`, `python3`, `pytest`, `ruff`, and `uv`. It displays the resolved executable, exact arguments, working directory, and timeout, then requires confirmation (default: no) for each invocation. It does not invoke a shell; execution has a timeout and bounded output, and only a small environment-variable allowlist is inherited. This is an approval gate, not an OS sandbox: an approved program runs as the current user and can access resources permitted to that account.
 
-Ollama, Gemini, and OpenRouter support bounded, non-streaming text generation through the backend provider interface and authenticated API. Set `DEFAULT_MODEL` to `ollama`, `gemini`, or `openrouter` to select the generation provider. The prompt runner and agent loop are not wired up yet; `forge -p ...` reports that limitation rather than sending a request.
+Ollama, Gemini, and OpenRouter support bounded, non-streaming text generation through the backend provider interface and authenticated API. Set `DEFAULT_MODEL` to `ollama`, `gemini`, or `openrouter` to select the generation provider. `forge -p ...` runs a bounded, read-only repository task and persists it to a local session. Workspace mutations and autonomous tool loops are not enabled.
 
 ## API endpoints
 
