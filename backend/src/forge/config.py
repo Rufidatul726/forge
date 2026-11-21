@@ -20,6 +20,8 @@ class ForgeSettings(BaseSettings):
     agent_workspace_root: Path | None = None
     cors_origins: str = "http://localhost:5173"
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
+    rate_limit_requests: int = 60
+    rate_limit_window_seconds: int = 60
 
     model_config = SettingsConfigDict(
         env_file=_BACKEND_ROOT / ".env.local",
@@ -64,6 +66,10 @@ class ForgeSettings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_cors_origins(self) -> "ForgeSettings":
+        if self.rate_limit_requests < 1:
+            raise ValueError("RATE_LIMIT_REQUESTS must be at least 1")
+        if self.rate_limit_window_seconds < 1:
+            raise ValueError("RATE_LIMIT_WINDOW_SECONDS must be at least 1")
         if self.forge_api_key is not None:
             if len(self.forge_api_key.get_secret_value()) < 32:
                 raise ValueError("FORGE_API_KEY must contain at least 32 characters")

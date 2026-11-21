@@ -128,6 +128,7 @@ Errors use this shape:
 - `AGENT_WORKSPACE_ROOT` is a server-only, explicit root for the read-only agent task endpoint; callers cannot override it.
 - Session data is retained at `AGENT_WORKSPACE_ROOT/.forge/sessions.sqlite3`, which workspace tools exclude from readable context.
 - `ENVIRONMENT` selects `development`, `test`, or `production`; `LOG_LEVEL` selects the backend log level.
+- `RATE_LIMIT_REQUESTS` and `RATE_LIMIT_WINDOW_SECONDS` configure a process-local sliding-window limit for authenticated generation, task, and session routes. It uses the direct client address and intentionally ignores forwarded-address headers; production deployments with multiple instances require an equivalent shared edge limit.
 - The API allows GET and POST plus the Authorization header and does not enable credentialed CORS.
 - The UI displays backend connection failures; it does not treat an unavailable API as a successful response.
 - Workspace writes and CLI commands require explicit approval; neither capability is exposed through the HTTP API. The agent task route is read-only, and generation is separately protected by the API key.

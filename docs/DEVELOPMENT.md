@@ -31,6 +31,8 @@ Backend environment variables:
 | `AGENT_WORKSPACE_ROOT` | empty | Required server-side workspace root for read-only `POST /api/v1/agent/tasks` |
 | `CORS_ORIGINS` | `http://localhost:5173` | Comma-separated allowed browser origins |
 | `LOG_LEVEL` | `INFO` | Backend log level: `DEBUG`, `INFO`, `WARNING`, or `ERROR` |
+| `RATE_LIMIT_REQUESTS` | `60` | Maximum requests from one direct client in each rate-limit window for authenticated generation, task, and session routes |
+| `RATE_LIMIT_WINDOW_SECONDS` | `60` | Positive length of the process-local rate-limit window in seconds |
 
 Frontend environment variables:
 
@@ -40,6 +42,8 @@ Frontend environment variables:
 | `VITE_FORGE_API_KEY` | empty | Optional local-development API key; visible to the browser |
 
 Generate an API key with `uv run --project backend python -c "import secrets; print(secrets.token_urlsafe(32))"`. Store it in `backend/.env.local`; do not commit it or put it in a `VITE_*` setting. The generation API requires this key in an `Authorization: Bearer ...` header and returns `503` until configured. Production mode requires both `FORGE_API_KEY` and `CORS_ORIGINS` with one or more HTTPS origins. Wildcards and localhost origins are rejected. Keep the local development settings for local use only.
+
+The built-in rate limiter is a process-local sliding window keyed by the direct client address; it intentionally does not trust `X-Forwarded-For`. When deploying multiple API instances or putting Forge behind a reverse proxy, enforce an equivalent shared limit at the edge and configure the proxy/client-address chain there. Keep `backend/.env.local` out of images and source control; inject provider credentials and `FORGE_API_KEY` through the deployment platform’s secret store, rotate them on exposure, and grant only the runtime identity access to them.
 
 `OLLAMA_HOST` must be an HTTP(S) origin with no embedded credentials, URL path, or query string. Set `DEFAULT_MODEL` to `ollama`, `gemini`, or `openrouter` to select the generation provider. To inspect configured providers and their available models:
 

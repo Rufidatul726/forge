@@ -96,9 +96,11 @@ Ollama, Gemini, and OpenRouter adapters can list models and generate non-streami
 - [ ] Choose deployment topology and supported database/storage options.
 - Add user authentication/authorization before exposing workspace or execution endpoints; the generation API key is not user identity or a replacement for that work.
 - [x] Configure production CORS and add liveness/readiness probes.
-- [ ] Add rate limiting and production secret-management guidance.
+- [x] Add process-local rate limiting and production secret-management guidance.
 - [x] Add CI for Python tests/build and frontend tests/lint/build.
 - [x] Document container builds and release security boundaries.
+
+**Current result:** authenticated generation, task, and session routes have a configurable process-local sliding-window limit. Production guidance requires deployment-managed secret injection and a shared edge limiter for multi-instance deployments; user authentication, deployment topology, and full operational observability remain follow-up work.
 
 **Done when:** a reproducible release pipeline and deployment instructions exist, with security controls enabled by default.
 

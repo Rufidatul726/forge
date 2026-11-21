@@ -125,6 +125,36 @@ def test_generation_endpoint_requires_configured_and_valid_api_key():
     assert unauthorized.json()["error"]["code"] == "unauthorized"
 
 
+def test_expensive_routes_are_rate_limited_per_direct_client():
+    app = create_app(
+        ForgeSettings(
+            _env_file=None,
+            forge_api_key="a" * 40,
+            rate_limit_requests=2,
+            rate_limit_window_seconds=60,
+        )
+    )
+    payload = {
+        "model": "qwen2.5-coder:7b",
+        "messages": [{"role": "user", "content": "Explain this code"}],
+    }
+
+    headers = {"Authorization": f"Bearer {'a' * 40}"}
+    first = request(app, "POST", "/api/v1/generate", headers=headers, json_body=payload)
+    second = request(app, "POST", "/api/v1/generate", headers=headers, json_body=payload)
+    limited = request(app, "POST", "/api/v1/generate", headers=headers, json_body=payload)
+
+    assert first.status_code == 503
+    assert second.status_code == 503
+    assert limited.status_code == 429
+    assert limited.json()["error"] == {
+        "code": "rate_limited",
+        "message": "Too many requests. Please try again later.",
+    }
+    assert limited.json()["request_id"] == limited.headers["X-Request-ID"]
+    assert int(limited.headers["Retry-After"]) >= 1
+
+
 def test_generation_endpoint_calls_selected_provider_and_returns_result(monkeypatch):
     from forge.providers.models import GenerationResult
 
@@ -497,6 +527,15 @@ def test_generation_api_key_is_optional_in_development_but_strong_when_set():
     assert ForgeSettings(_env_file=None, forge_api_key="").forge_api_key is None
     with pytest.raises(ValidationError, match="at least 32 characters"):
         ForgeSettings(_env_file=None, forge_api_key="too-short")
+
+
+@pytest.mark.parametrize(
+    ("setting_name", "value"),
+    [("rate_limit_requests", 0), ("rate_limit_window_seconds", 0)],
+)
+def test_settings_require_positive_rate_limit_values(setting_name: str, value: int):
+    with pytest.raises(ValidationError, match="RATE_LIMIT"):
+        ForgeSettings(_env_file=None, **{setting_name: value})
 
 
 def test_generation_api_key_uses_expected_environment_variable(monkeypatch):

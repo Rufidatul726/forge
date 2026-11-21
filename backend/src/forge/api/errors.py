@@ -35,6 +35,7 @@ class ErrorResponse(BaseModel):
 
 ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {
     401: {"model": ErrorResponse, "description": "API key is missing or invalid"},
+    429: {"model": ErrorResponse, "description": "Rate limit exceeded"},
     404: {"model": ErrorResponse, "description": "Resource not found"},
     422: {"model": ErrorResponse, "description": "Request validation failed"},
     500: {"model": ErrorResponse, "description": "Unexpected server error"},
