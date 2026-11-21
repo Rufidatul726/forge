@@ -104,6 +104,7 @@ Ollama, Gemini, and OpenRouter support bounded, non-streaming text generation th
 | Method | Path | Purpose |
 |---|---|---|
 | `GET` | `/api/v1/health` | Check whether the API is responding |
+| `GET` | `/api/v1/ready` | Check API key and workspace readiness |
 | `GET` | `/api/v1/providers` | Read the default model and provider configuration status |
 | `POST` | `/api/v1/generate` | Generate a bounded response using the configured provider |
 | `POST` | `/api/v1/agent/tasks` | Run a read-only repository task in the configured workspace |
@@ -182,6 +183,30 @@ Additional setup and troubleshooting notes are in [Development](docs/DEVELOPMENT
 - Do not use secrets in `VITE_*` variables; frontend build-time variables are public.
 - The API's development CORS allowlist is configured with `CORS_ORIGINS`.
 - Command execution requires explicit per-command approval and is not exposed through the API. User authentication and model-generated tool safety are still required before remote agent workflows are exposed; the generation API key is not user identity. See [Implementation status and steps](docs/IMPLEMENTATION.md).
+
+## Deployment and support
+
+Production releases should use explicit HTTPS CORS origins, a secret-managed
+`FORGE_API_KEY` of at least 32 characters, and a mounted persistent workspace
+directory. `GET /api/v1/health` is suitable for liveness and
+`GET /api/v1/ready` reports whether the workspace and API key are configured.
+
+The repository includes backend and frontend container images. Build them from
+the repository root:
+
+```powershell
+docker build -f backend/Dockerfile -t forge-backend .
+docker build -f frontend/Dockerfile -t forge-frontend .
+```
+
+Use secrets and TLS through the deployment platform rather than Docker build
+arguments or `VITE_*` variables. The API key is shared bearer tooling, not user
+identity or authorization. Add a real identity and authorization system before
+exposing workspace or execution capabilities to multiple users.
+
+Report suspected vulnerabilities privately through the repository's security
+policy. Operational support is provided on a best-effort basis in the issue
+tracker; do not include provider keys or workspace contents in reports.
 
 ## License
 

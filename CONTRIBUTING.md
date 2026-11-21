@@ -22,6 +22,7 @@ uv build --project backend
 Run the frontend checks from `frontend/`:
 
 ```powershell
+npm run test
 npm run lint
 npm run build
 ```

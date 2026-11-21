@@ -62,6 +62,12 @@ The CLI exposes these capabilities as `forge files`, `forge read`, `forge search
 
 Returns `{"status":"ok","service":"forge-api"}` when the API process responds.
 
+### `GET /api/v1/ready`
+
+Returns readiness only when `FORGE_API_KEY` is configured and
+`AGENT_WORKSPACE_ROOT` resolves to an existing directory. Otherwise it returns
+503 with the common error envelope.
+
 ### `GET /api/v1/providers`
 
 Returns the configured default model and whether supported provider settings are present:

@@ -54,6 +54,34 @@ def test_health_endpoint_has_a_correlatable_request_id(app: FastAPI, caplog):
     assert f"request_id={request_id}" in caplog.text
 
 
+def test_readiness_endpoint_requires_workspace_and_api_key(tmp_path):
+    api_key = "a" * 40
+    configured = request(
+        create_app(
+            ForgeSettings(
+                _env_file=None,
+                forge_api_key=api_key,
+                agent_workspace_root=tmp_path,
+            )
+        ),
+        "GET",
+        "/api/v1/ready",
+    )
+    missing = request(
+        create_app(ForgeSettings(_env_file=None)),
+        "GET",
+        "/api/v1/ready",
+    )
+
+    assert configured.status_code == 200
+    assert configured.json() == {
+        "status": "ready",
+        "workspace": True,
+        "api_key": True,
+    }
+    assert missing.status_code == 503
+
+
 def test_provider_endpoint_uses_injected_settings():
     settings = ForgeSettings(
         _env_file=None,

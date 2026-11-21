@@ -104,6 +104,9 @@ npm run lint
 npm run build
 ```
 
+The CI workflow runs the same backend tests/build and frontend tests/lint/build
+on pushes and pull requests.
+
 ## Troubleshooting
 
 - **Frontend reports API offline:** Start the backend and check `VITE_API_BASE_URL` and `CORS_ORIGINS`. The frontend dev origin must be in the backend CORS list.

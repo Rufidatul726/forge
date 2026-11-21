@@ -92,11 +92,12 @@ Ollama, Gemini, and OpenRouter adapters can list models and generate non-streami
 
 ### 6. Prepare a production release
 
-- Choose deployment topology and supported database/storage options.
+- [ ] Choose deployment topology and supported database/storage options.
 - Add user authentication/authorization before exposing workspace or execution endpoints; the generation API key is not user identity or a replacement for that work.
-- Configure production CORS, secret management, health/readiness probes, and structured logs.
-- Add CI for Python tests/build and frontend lint/build.
-- Document installation, upgrades, support policy, and security reporting.
+- [x] Configure production CORS and add liveness/readiness probes.
+- [ ] Add rate limiting and production secret-management guidance.
+- [x] Add CI for Python tests/build and frontend tests/lint/build.
+- [x] Document container builds and release security boundaries.
 
 **Done when:** a reproducible release pipeline and deployment instructions exist, with security controls enabled by default.
 
