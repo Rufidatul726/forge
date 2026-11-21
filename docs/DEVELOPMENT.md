@@ -99,6 +99,7 @@ uv build --project backend
 From `frontend/`:
 
 ```powershell
+npm run test
 npm run lint
 npm run build
 ```

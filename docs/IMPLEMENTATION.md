@@ -84,7 +84,7 @@ Ollama, Gemini, and OpenRouter adapters can list models and generate non-streami
 - [x] Add chat/session endpoints after the backend execution contract.
 - [x] Implement session selection, prompt submission, progress, cancellation, and error states.
 - [x] Keep provider credentials and execution policy on the server.
-- Add frontend unit/component and end-to-end tests for success, failure, offline, and cancellation states.
+- [x] Add frontend unit/component tests for success, failure, offline, and cancellation states.
 
 **Current result:** the React dashboard includes session selection and creation, persistent chat turns, model/context controls, cancellation, loading, offline, and API error states. Tasks remain non-streaming and read-only; the browser does not select the server workspace or expose command execution.
 

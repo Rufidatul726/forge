@@ -109,7 +109,16 @@ function App() {
             Authorization: `Bearer ${apiKey}`,
           },
         })
-        if (!response.ok) throw new Error('Could not load sessions.')
+        if (!response.ok) {
+          let message = 'Could not load sessions.'
+          try {
+            const payload = (await response.json()) as { error?: { message?: string } }
+            if (payload.error?.message) message = payload.error.message
+          } catch {
+            // Keep the safe fallback for non-JSON responses.
+          }
+          throw new Error(message)
+        }
         setSessions((await response.json()) as SessionSummary[])
         setWorkspaceError(null)
       } catch (requestError) {
@@ -261,15 +270,15 @@ function App() {
         <div className="sidebar-label">WORKSPACE</div>
         <nav className="navigation" aria-label="Main navigation">
           <button className={`nav-item ${view === 'overview' ? 'active' : ''}`} onClick={() => setView('overview')} aria-current={view === 'overview' ? 'page' : undefined}>
-            <span className="nav-icon">⌂</span>
+            <span className="nav-icon" aria-hidden="true">⌂</span>
             Overview
           </button>
           <button className={`nav-item ${view === 'sessions' ? 'active' : ''}`} onClick={() => setView('sessions')} aria-current={view === 'sessions' ? 'page' : undefined}>
-            <span className="nav-icon">◷</span>
+            <span className="nav-icon" aria-hidden="true">◷</span>
             Sessions
           </button>
           <button className={`nav-item ${view === 'settings' ? 'active' : ''}`} onClick={() => setView('settings')} aria-current={view === 'settings' ? 'page' : undefined}>
-            <span className="nav-icon">⚙</span>
+            <span className="nav-icon" aria-hidden="true">⚙</span>
             Settings
           </button>
         </nav>
