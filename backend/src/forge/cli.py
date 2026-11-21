@@ -316,9 +316,25 @@ def write_file(
     path: str = typer.Argument(help="Workspace-relative file path."),
     content: str = typer.Option(..., "--content", help="Complete replacement file content."),
     workspace: Path = typer.Option(Path("."), "--workspace", help="Workspace root."),
+    session_id: str | None = typer.Option(
+        None,
+        "--session",
+        help="Existing session ID to receive approved change history.",
+    ),
 ) -> None:
     root = resolve_workspace(workspace)
     selected_workspace = Workspace(root)
+    session_store = None
+    if session_id is not None:
+        if len(session_id) != 32 or any(character not in "0123456789abcdef" for character in session_id):
+            console.print("[red]Workspace write was not applied:[/] Invalid session ID.")
+            raise typer.Exit(code=1)
+        session_store = SessionStore(root)
+        try:
+            session_store.get(session_id)
+        except SessionNotFoundError:
+            console.print("[red]Workspace write was not applied:[/] Session was not found.")
+            raise typer.Exit(code=1)
 
     def request_approval(proposal: WriteProposal) -> bool:
         console.print(
@@ -337,6 +353,17 @@ def write_file(
         raise typer.Exit(code=1) from error
 
     if result.changed:
+        if session_store is not None:
+            session_store.append_outcome(
+                session_id,
+                "workspace_write",
+                {
+                    "path": result.path,
+                    "bytes_written": result.bytes_written,
+                    "previous_sha256": result.previous_sha256,
+                    "current_sha256": result.current_sha256,
+                },
+            )
         console.print(f"[green]Updated {result.path}[/] ({result.bytes_written} bytes)")
     else:
         console.print(f"[dim]No changes needed for {result.path}.[/]")

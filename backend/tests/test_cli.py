@@ -122,6 +122,61 @@ def test_write_command_decline_leaves_workspace_unchanged(tmp_path):
     assert not target.exists()
 
 
+def test_write_command_rejects_missing_session_before_mutation(tmp_path):
+    target = tmp_path / "new.py"
+    result = runner.invoke(
+        app,
+        [
+            "write",
+            "new.py",
+            "--content",
+            "print('hello')\n",
+            "--workspace",
+            str(tmp_path),
+            "--session",
+            "a" * 32,
+        ],
+        input="y\n",
+    )
+
+    assert result.exit_code == 1
+    assert "Session was not found" in result.stdout
+    assert "Apply this exact change?" not in result.stdout
+    assert not target.exists()
+
+
+def test_write_command_records_approved_change_in_session(tmp_path):
+    from forge.sessions import SessionStore
+
+    store = SessionStore(tmp_path)
+    session = store.create("Implementation")
+    target = tmp_path / "new.py"
+    result = runner.invoke(
+        app,
+        [
+            "write",
+            "new.py",
+            "--content",
+            "print('hello')\n",
+            "--workspace",
+            str(tmp_path),
+            "--session",
+            session.id,
+        ],
+        input="y\n",
+    )
+
+    assert result.exit_code == 0
+    assert target.read_text(encoding="utf-8") == "print('hello')\n"
+    restored = store.get(session.id)
+    assert len(restored.outcomes) == 1
+    assert restored.outcomes[0].kind == "workspace_write"
+    assert restored.outcomes[0].payload["path"] == "new.py"
+    assert restored.outcomes[0].payload["bytes_written"] == 15
+    assert restored.outcomes[0].payload["previous_sha256"] is None
+    assert restored.outcomes[0].payload["current_sha256"]
+
+
 def test_write_command_rejects_sensitive_targets_without_prompt(tmp_path):
     result = runner.invoke(
         app,

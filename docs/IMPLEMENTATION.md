@@ -30,7 +30,7 @@ This document is the implementation checklist and handoff point for the project.
 - [ ] Full agent execution loop, streaming chat, and user-approved mutations.
 - [x] Connect the CLI prompt runner to the read-only agent service and persistent sessions.
 - [x] Add SQLite session persistence, listing, resume, and safe deletion.
-- [ ] Persist project change history after approved workspace writes are connected to sessions.
+- [x] Persist project change history after approved workspace writes are connected to sessions.
 - [x] Frontend chat/session workflow and settings management.
 - [ ] Frontend automated tests and end-to-end coverage.
 - [ ] Production deployment, authentication, rate limiting, and operational observability.
@@ -78,7 +78,7 @@ Ollama, Gemini, and OpenRouter adapters can list models and generate non-streami
 - [x] Persist conversation turns, generation outcomes, and session metadata.
 - [x] Support creating, listing, resuming, and safely deleting sessions through API and CLI.
 
-**Current result:** session state survives process restarts in `<workspace>/.forge/sessions.sqlite3`. API and CLI use the same store; task resume restores saved turns and records successful assistant results. Project file changes remain outside this session workflow and still require existing write approvals.
+**Current result:** session state survives process restarts in `<workspace>/.forge/sessions.sqlite3`. API and CLI use the same store; task resume restores saved turns and records successful assistant results. Approved CLI writes can use `forge write --session <id>` to append hash-only `workspace_write` outcomes. Project file mutations remain approval-gated and outside the HTTP API.
 
 ### 5. Connect the web workflow
 

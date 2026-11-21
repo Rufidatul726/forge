@@ -93,7 +93,7 @@ uv run --project backend forge diff .
 
 `forge models` checks configured providers and lists available models. Set `OLLAMA_HOST` in `backend/.env.local` if Ollama is not using its default local address.
 
-`forge files`, `forge read`, and `forge search` provide bounded access to the selected workspace. `forge write` shows a diff and requires explicit confirmation before atomically creating or replacing a file. It refuses sensitive paths, symlinks, parent traversal, and paths outside the workspace. Do not pass secrets as command-line content because shells may retain command history.
+`forge files`, `forge read`, and `forge search` provide bounded access to the selected workspace. `forge write` shows a diff and requires explicit confirmation before atomically creating or replacing a file. It refuses sensitive paths, symlinks, parent traversal, and paths outside the workspace. Pass `--session <32-character-id>` to record approved, hash-only workspace change metadata in an existing session. Do not pass secrets as command-line content because shells may retain command history.
 
 `forge run` allows only `git`, `npm`, `node`, `python`, `python3`, `pytest`, `ruff`, and `uv`. It displays the resolved executable, exact arguments, working directory, and timeout, then requires confirmation (default: no) for each invocation. It does not invoke a shell; execution has a timeout and bounded output, and only a small environment-variable allowlist is inherited. This is an approval gate, not an OS sandbox: an approved program runs as the current user and can access resources permitted to that account.
 
