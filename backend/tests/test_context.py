@@ -1,9 +1,13 @@
+import logging
+
 import pytest
 
 from forge.context import (
     Workspace,
+    WorkspaceConflictError,
     WorkspaceEncodingError,
     WorkspaceFileTooLargeError,
+    WorkspacePermissionDeniedError,
     WorkspacePathError,
 )
 
@@ -204,3 +208,115 @@ def test_workspace_requires_an_existing_directory(tmp_path):
     file_path.write_text("file", encoding="utf-8")
     with pytest.raises(WorkspacePathError):
         Workspace(file_path)
+
+
+def test_write_proposal_requires_approval_and_denial_is_non_mutating(tmp_path, caplog):
+    target = tmp_path / "main.py"
+    target.write_text("before\n", encoding="utf-8")
+    workspace = Workspace(tmp_path)
+    proposals = []
+
+    def deny(proposal):
+        proposals.append(proposal)
+        return False
+
+    with caplog.at_level(logging.INFO, logger="forge.context"):
+        with pytest.raises(WorkspacePermissionDeniedError):
+            workspace.write_text("main.py", "after\n", approve=deny)
+
+    assert target.read_text(encoding="utf-8") == "before\n"
+    assert len(proposals) == 1
+    assert "-before" in proposals[0].diff
+    assert "+after" in proposals[0].diff
+    assert "workspace_write_completed" not in caplog.text
+
+
+def test_approved_write_creates_and_updates_files_with_audit_metadata(tmp_path, caplog):
+    workspace = Workspace(tmp_path)
+    proposals = []
+    with caplog.at_level(logging.INFO, logger="forge.context"):
+        created = workspace.write_text(
+            "new.py",
+            "print('first')\n",
+            approve=lambda proposal: proposals.append(proposal) or True,
+        )
+        updated = workspace.write_text(
+            "new.py",
+            "print('second')\n",
+            approve=lambda proposal: proposals.append(proposal) or True,
+        )
+
+    assert created.changed is True
+    assert created.previous_sha256 is None
+    assert created.current_sha256
+    assert updated.changed is True
+    assert updated.previous_sha256 == created.current_sha256
+    assert (tmp_path / "new.py").read_text(encoding="utf-8") == "print('second')\n"
+    assert len(proposals) == 2
+    assert "workspace_write_completed" in caplog.text
+    assert "print('second')" not in caplog.text
+    assert not list(tmp_path.glob(".forge-write-*.tmp"))
+
+
+def test_write_does_not_prompt_or_mutate_when_content_is_unchanged(tmp_path):
+    target = tmp_path / "same.txt"
+    target.write_text("unchanged", encoding="utf-8")
+    workspace = Workspace(tmp_path)
+
+    def unexpected_approval(proposal):
+        raise AssertionError("unchanged content should not require approval")
+
+    result = workspace.write_text("same.txt", "unchanged", approve=unexpected_approval)
+    assert result.changed is False
+    assert target.read_text(encoding="utf-8") == "unchanged"
+
+
+def test_write_rejects_stale_proposal_without_overwriting_concurrent_change(tmp_path):
+    target = tmp_path / "main.py"
+    target.write_text("original\n", encoding="utf-8")
+    workspace = Workspace(tmp_path)
+
+    def change_during_approval(proposal):
+        target.write_text("changed by user\n", encoding="utf-8")
+        return True
+
+    with pytest.raises(WorkspaceConflictError):
+        workspace.write_text("main.py", "generated change\n", approve=change_during_approval)
+
+    assert target.read_text(encoding="utf-8") == "changed by user\n"
+
+
+@pytest.mark.parametrize(
+    "relative_path",
+    [".env.local", "credentials.json", "private.key", "../outside.txt", "C:\\outside.txt"],
+)
+def test_write_rejects_sensitive_or_outside_paths(tmp_path, relative_path):
+    workspace = Workspace(tmp_path)
+    with pytest.raises(WorkspacePathError):
+        workspace.write_text(relative_path, "content", approve=lambda proposal: True)
+
+
+def test_write_validates_size_encoding_and_existing_parent(tmp_path):
+    workspace = Workspace(tmp_path, max_file_bytes=8)
+    with pytest.raises(WorkspaceFileTooLargeError):
+        workspace.write_text("large.txt", "x" * 9, approve=lambda proposal: True)
+    with pytest.raises(WorkspaceEncodingError):
+        workspace.write_text("binary.txt", "contains\x00nul", approve=lambda proposal: True)
+    with pytest.raises(WorkspacePathError, match="parent directory"):
+        workspace.write_text("missing/file.txt", "text", approve=lambda proposal: True)
+
+
+def test_write_refuses_symbolic_link_targets(tmp_path, monkeypatch):
+    target = tmp_path / "target.txt"
+    target.write_text("original", encoding="utf-8")
+    link = tmp_path / "linked.txt"
+    link.write_text("link placeholder", encoding="utf-8")
+    original_is_symlink = type(tmp_path).is_symlink
+
+    def is_symlink(path):
+        return path == link or original_is_symlink(path)
+
+    monkeypatch.setattr(type(tmp_path), "is_symlink", is_symlink)
+
+    with pytest.raises(WorkspacePathError, match="symbolic links"):
+        Workspace(tmp_path).write_text("linked.txt", "new", approve=lambda proposal: True)

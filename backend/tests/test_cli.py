@@ -81,6 +81,45 @@ def test_read_command_refuses_paths_outside_workspace(tmp_path):
     assert "not for the workspace" not in result.stdout
 
 
+def test_write_command_requires_and_honors_confirmation(tmp_path):
+    target = tmp_path / "new.py"
+    result = runner.invoke(
+        app,
+        ["write", "new.py", "--content", "print('hello')\n", "--workspace", str(tmp_path)],
+        input="y\n",
+    )
+
+    assert result.exit_code == 0
+    assert "Apply this exact change?" in result.stdout
+    assert "Updated new.py" in result.stdout
+    assert target.read_text(encoding="utf-8") == "print('hello')\n"
+
+
+def test_write_command_decline_leaves_workspace_unchanged(tmp_path):
+    target = tmp_path / "new.py"
+    result = runner.invoke(
+        app,
+        ["write", "new.py", "--content", "print('hello')\n", "--workspace", str(tmp_path)],
+        input="n\n",
+    )
+
+    assert result.exit_code == 1
+    assert "Workspace write was not approved" in result.stdout
+    assert not target.exists()
+
+
+def test_write_command_rejects_sensitive_targets_without_prompt(tmp_path):
+    result = runner.invoke(
+        app,
+        ["write", ".env.local", "--content", "TOKEN=secret", "--workspace", str(tmp_path)],
+        input="y\n",
+    )
+
+    assert result.exit_code == 1
+    assert "Apply this exact change?" not in result.stdout
+    assert not (tmp_path / ".env.local").exists()
+
+
 def test_search_command_reports_workspace_matches(tmp_path):
     (tmp_path / "main.py").write_text("forge is ready\n", encoding="utf-8")
     (tmp_path / ".env").write_text("forge secret\n", encoding="utf-8")

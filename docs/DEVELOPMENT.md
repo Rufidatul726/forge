@@ -72,9 +72,10 @@ uv run --project backend forge --help
 uv run --project backend forge files .
 uv run --project backend forge read README.md
 uv run --project backend forge search "TODO"
+uv run --project backend forge write src/example.py --content "print('hello')"
 ```
 
-The workspace commands are read-only. They reject absolute paths, parent traversal, escaped symlinks, sensitive files, and common generated directories. Reads are capped at 1 MiB per file; searches also cap candidate files and result lines. Use a narrower `--pattern` for large repositories.
+Workspace file operations reject absolute paths, parent traversal, escaped symlinks, sensitive files, and common generated directories. Reads and writes are capped at 1 MiB per file; searches also cap candidate files and result lines. `forge write` previews a diff and asks for confirmation before replacing or creating one file. It does not create parent directories. Avoid putting secrets in `--content`, which can be retained in shell history. Use a narrower `--pattern` for large repositories.
 
 ## Tests and builds
 

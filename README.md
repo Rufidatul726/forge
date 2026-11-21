@@ -80,12 +80,13 @@ uv run --project backend forge models
 uv run --project backend forge files .
 uv run --project backend forge read README.md
 uv run --project backend forge search "TODO"
+uv run --project backend forge write src/example.py --content "print('hello')"
 uv run --project backend forge diff .
 ```
 
 `forge models` checks the configured Ollama service and lists its installed models. Set `OLLAMA_HOST` in `backend/.env.local` if Ollama is not using its default local address.
 
-`forge files`, `forge read`, and `forge search` provide read-only access bounded to the selected workspace. Sensitive files, generated directories, and paths outside the workspace are excluded.
+`forge files`, `forge read`, and `forge search` provide bounded access to the selected workspace. `forge write` shows a diff and requires explicit confirmation before atomically creating or replacing a file. It refuses sensitive paths, symlinks, parent traversal, and paths outside the workspace. Do not pass secrets as command-line content because shells may retain command history.
 
 The Ollama provider supports bounded, non-streaming text generation through the backend provider interface. The prompt runner and agent loop are not wired up yet; `forge -p ...` reports that limitation rather than sending a request. Gemini and OpenRouter are configuration placeholders until their adapters are implemented.
 

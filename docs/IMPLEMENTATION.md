@@ -17,15 +17,16 @@ This document is the implementation checklist and handoff point for the project.
 - [x] Add request IDs, request-completion logging, and validated runtime/CORS settings.
 - [x] Define a provider protocol and provider-neutral generation models.
 - [x] Implement the Ollama adapter with bounded requests, timeouts, cancellation, and safe error mapping.
-- [x] Add read-only workspace discovery, bounded text reads/search, and workspace instructions loading.
-- [x] Expose the read-only workspace operations through `forge files`, `forge read`, and `forge search`.
+- [x] Add bounded workspace discovery, text reads/search, and instruction loading.
+- [x] Add preview-first file writes with explicit approval, stale-content checks, atomic replacement, and hash-only audit logs.
+- [x] Expose workspace operations through `forge files`, `forge read`, `forge search`, and `forge write`.
 
 ### Not implemented yet
 
 - [ ] Agent execution loop and interactive chat endpoint.
 - [ ] Gemini and OpenRouter inference adapters.
 - [ ] Expose provider generation through an API or user-facing one-shot command.
-- [ ] File write tools, permission prompts, and controlled terminal execution.
+- [ ] Controlled terminal execution with explicit permissions, timeouts, cancellation, and audit results.
 - [ ] Session persistence, resume, and change history.
 - [ ] Frontend chat/session workflow and settings management.
 - [ ] Frontend automated tests and end-to-end coverage.
@@ -57,12 +58,13 @@ The Ollama adapter can list installed models and generate non-streaming text for
 ### 3. Build the guarded agent core
 
 - [x] Add workspace context discovery and explicit workspace-root boundaries.
-- [x] Implement bounded read/list/search tools before write/command tools.
-- Require clear permission policy for file writes and subprocess execution.
-- Add tool input validation, timeouts, cancellation, and auditable results.
-- Connect the CLI and HTTP API to shared agent services rather than duplicating behavior.
+- [x] Implement bounded read/list/search tools.
+- [x] Add diff-previewed writes requiring explicit approval, with stale-content detection and auditable results.
+- [x] Connect CLI workspace operations to the shared workspace service.
+- [ ] Add subprocess execution controls, timeouts, cancellation, and audit results.
+- [ ] Connect authenticated API workflows to shared agent services.
 
-**Current result:** read-only workspace inspection is available from the CLI and shared backend service, with traversal, symlink escape, secret-file, size, and scan-limit checks. Agent execution, file writes, and terminal commands are intentionally still unavailable.
+**Current result:** workspace reads/searches are bounded; file writes require an explicit approval callback and are previewed in the CLI. Sensitive paths, symlink write targets, traversal, oversized content, and stale proposals are rejected. The agent loop and terminal command execution remain unavailable.
 
 **Done when:** a bounded task can run against a test workspace, with denied actions remaining non-mutating and all changes inspectable.
 

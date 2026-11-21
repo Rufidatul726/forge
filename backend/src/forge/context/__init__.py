@@ -4,10 +4,14 @@ from forge.context.workspace import (
     SearchResults,
     Workspace,
     WorkspaceContext,
+    WorkspaceConflictError,
     WorkspaceEncodingError,
     WorkspaceError,
     WorkspaceFileTooLargeError,
+    WorkspacePermissionDeniedError,
     WorkspacePathError,
+    WriteProposal,
+    WriteResult,
 )
 
 __all__ = [
@@ -16,8 +20,12 @@ __all__ = [
     "SearchResults",
     "Workspace",
     "WorkspaceContext",
+    "WorkspaceConflictError",
     "WorkspaceEncodingError",
     "WorkspaceError",
     "WorkspaceFileTooLargeError",
+    "WorkspacePermissionDeniedError",
     "WorkspacePathError",
+    "WriteProposal",
+    "WriteResult",
 ]

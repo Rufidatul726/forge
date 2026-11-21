@@ -43,9 +43,9 @@ Gemini and OpenRouter credentials may be configured but their adapters are not i
 
 ## Read-only workspace context
 
-`backend/src/forge/context/workspace.py` provides bounded workspace file discovery, UTF-8 reads, text search, and optional `FORGE.md` instruction loading. Operations accept workspace-relative paths and patterns, reject traversal and absolute paths, resolve symlinks before access, and exclude common generated directories and credential-bearing files. Reads and scans have byte, result, and candidate limits. Binary and oversized files are skipped in searches and reported in the result metadata.
+`backend/src/forge/context/workspace.py` provides bounded workspace file discovery, UTF-8 reads, text search, optional `FORGE.md` instruction loading, and guarded file writes. Operations accept workspace-relative paths and patterns, reject traversal and absolute paths, resolve symlinks before access, and exclude common generated directories and credential-bearing files. Reads and scans have byte, result, and candidate limits. Binary and oversized files are skipped in searches and reported in the result metadata.
 
-The CLI exposes these capabilities as `forge files`, `forge read`, and `forge search`. The core is read-only: file writes and subprocess execution are not implemented. Workspace paths are an access boundary for normal use, not a sandbox against malicious code already running with the same OS account.
+The CLI exposes these capabilities as `forge files`, `forge read`, `forge search`, and `forge write`. Writes are proposed as a unified diff and require an explicit confirmation callback; the operation rechecks the previous content hash after approval, writes through a temporary file followed by atomic replacement, and returns/logs hashes and byte counts without file contents. Write targets must not be symlinks and their parent directories must already exist. Shell command execution is not implemented. Workspace paths are an access boundary for normal use, not a sandbox against malicious code already running with the same OS account.
 
 ## Current API contract
 
@@ -98,7 +98,7 @@ Errors use this shape:
 - `ENVIRONMENT` selects `development`, `test`, or `production`; `LOG_LEVEL` selects the backend log level.
 - The API allows only the methods and headers currently needed by the dashboard and does not enable credentialed CORS.
 - The UI displays backend connection failures; it does not treat an unavailable API as a successful response.
-- Workspace access and generated command/file operations must be permission-gated before execution support is added.
+- Workspace write operations require explicit approval; generated command execution remains unavailable.
 
 ## Extension conventions
 

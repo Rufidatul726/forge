@@ -6,8 +6,9 @@ from git import InvalidGitRepositoryError, Repo
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
+from rich.text import Text
 
-from forge.context import Workspace, WorkspaceError
+from forge.context import Workspace, WorkspaceError, WriteProposal
 from forge.config import ForgeSettings, forge_directory, instructions_path
 from forge.providers import ProviderError, get_provider
 
@@ -173,6 +174,37 @@ def read_file(
         console.print(f"[red]Could not read workspace file:[/] {error}")
         raise typer.Exit(code=1) from error
     console.print(content, markup=False, end="")
+
+
+@app.command("write")
+def write_file(
+    path: str = typer.Argument(help="Workspace-relative file path."),
+    content: str = typer.Option(..., "--content", help="Complete replacement file content."),
+    workspace: Path = typer.Option(Path("."), "--workspace", help="Workspace root."),
+) -> None:
+    root = resolve_workspace(workspace)
+    selected_workspace = Workspace(root)
+
+    def request_approval(proposal: WriteProposal) -> bool:
+        console.print(
+            Panel(
+                Text(proposal.diff or "No changes to apply."),
+                title=f"Proposed change: {proposal.path}",
+                border_style="yellow",
+            )
+        )
+        return typer.confirm("Apply this exact change?", default=False)
+
+    try:
+        result = selected_workspace.write_text(path, content, approve=request_approval)
+    except WorkspaceError as error:
+        console.print(f"[red]Workspace write was not applied:[/] {error}")
+        raise typer.Exit(code=1) from error
+
+    if result.changed:
+        console.print(f"[green]Updated {result.path}[/] ({result.bytes_written} bytes)")
+    else:
+        console.print(f"[dim]No changes needed for {result.path}.[/]")
 
 
 @app.command("search")
