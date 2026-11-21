@@ -169,7 +169,7 @@ def test_generation_endpoint_maps_provider_errors_to_safe_contract(monkeypatch):
     assert "private upstream detail" not in response.text
 
 
-def test_generation_endpoint_rejects_unimplemented_default_provider():
+def test_generation_endpoint_rejects_unconfigured_default_provider():
     api_key = "a" * 40
     response = request(
         create_app(
@@ -188,8 +188,54 @@ def test_generation_endpoint_rejects_unimplemented_default_provider():
         },
     )
 
-    assert response.status_code == 501
-    assert response.json()["error"]["code"] == "provider_not_implemented"
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "provider_unavailable"
+
+
+@pytest.mark.parametrize(
+    ("provider_name", "setting_name"),
+    [("gemini", "gemini_api_key"), ("openrouter", "openrouter_api_key")],
+)
+def test_generation_endpoint_dispatches_to_configured_cloud_provider(
+    monkeypatch,
+    provider_name: str,
+    setting_name: str,
+):
+    from forge.providers.models import GenerationResult
+
+    class FakeProvider:
+        async def generate(self, payload):
+            return GenerationResult(model=payload.model, content="Cloud response", done=True)
+
+    selected_names = []
+
+    def fake_get_provider(name, settings):
+        selected_names.append(name)
+        return FakeProvider()
+
+    monkeypatch.setattr("forge.api.routes.generation.get_provider", fake_get_provider)
+    api_key = "a" * 40
+    response = request(
+        create_app(
+            ForgeSettings(
+                _env_file=None,
+                forge_api_key=api_key,
+                default_model=provider_name,
+                **{setting_name: "cloud-provider-key"},
+            )
+        ),
+        "POST",
+        "/api/v1/generate",
+        headers={"Authorization": f"Bearer {api_key}"},
+        json_body={
+            "model": "provider/model",
+            "messages": [{"role": "user", "content": "Hello"}],
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["content"] == "Cloud response"
+    assert selected_names == [provider_name]
 
 
 def test_unknown_route_returns_stable_error_contract(app: FastAPI):

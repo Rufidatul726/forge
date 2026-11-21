@@ -31,15 +31,16 @@ The API owns browser-facing contracts and CORS. Provider/model execution, reposi
 
 `backend/src/forge/providers/protocol.py` defines the async `ModelProvider` interface. Provider-neutral chat messages and bounded generation options live in `providers/models.py`; adapters map those models to provider-specific protocols and raise typed errors with safe public messages.
 
-The first adapter is `OllamaProvider`:
+The provider adapters are `OllamaProvider`, `GeminiProvider`, and `OpenRouterProvider`:
 
-- It reads the server-only `OLLAMA_HOST` setting and uses `/api/tags` to list installed models and `/api/chat` for non-streaming generation.
+- Ollama reads the server-only `OLLAMA_HOST` setting and uses `/api/tags` to list installed models and `/api/chat` for non-streaming generation.
+- Gemini uses the server-only `GEMINI_API_KEY` with the Gemini REST API; OpenRouter uses the server-only `OPENROUTER_API_KEY` with its OpenAI-compatible REST API.
 - Requests have a 30-second timeout, generation is capped at 8,192 tokens, and response bodies are limited to 2 MiB.
 - Network, timeout, HTTP, malformed response, and oversized response failures map to typed provider errors without returning upstream response bodies.
 - Cancellation is not swallowed.
-- `forge models` exercises model discovery. `POST /api/v1/generate` exposes bounded generation behind a bearer API key; the CLI prompt workflow and agent loop are not connected to it yet.
+- `forge models` exercises model discovery for configured providers. `POST /api/v1/generate` exposes bounded generation behind a bearer API key; the CLI prompt workflow and agent loop are not connected to it yet.
 
-Gemini and OpenRouter credentials may be configured but their adapters are not implemented. Provider API keys must remain server-side and must not be included in logs or frontend responses.
+Provider API keys must remain server-side and must not be included in logs or frontend responses.
 
 ## Read-only workspace context
 
@@ -74,7 +75,7 @@ The Ollama `configured` value indicates that an endpoint is configured; it does 
 
 ### `POST /api/v1/generate`
 
-Requires `Authorization: Bearer <FORGE_API_KEY>`. The configured key must be at least 32 characters, and production settings require it. The request uses the provider-neutral `GenerationRequest` schema (`model`, 1-64 messages, and `max_tokens` from 1 to 8,192); individual message content is capped at 64,000 characters. The current route dispatches only to Ollama. Success returns a `GenerationResult` with the model, assistant content, and completion flag. Authentication failures, unsupported providers, provider failures, and timeouts use the common error envelope with 401, 501, 502/503, or 504 status codes. The endpoint does not read or modify workspaces and does not execute commands.
+Requires `Authorization: Bearer <FORGE_API_KEY>`. The configured key must be at least 32 characters, and production settings require it. The request uses the provider-neutral `GenerationRequest` schema (`model`, 1-64 messages, and `max_tokens` from 1 to 8,192); individual message content is capped at 64,000 characters. The route dispatches to the configured `DEFAULT_MODEL` provider (`ollama`, `gemini`, or `openrouter`). Success returns a `GenerationResult` with the model, assistant content, and completion flag. Authentication failures, unsupported providers, provider failures, and timeouts use the common error envelope with 401, 501, 502/503, or 504 status codes. The endpoint does not read or modify workspaces and does not execute commands.
 
 ## Error and request tracing contract
 

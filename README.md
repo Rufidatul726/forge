@@ -34,7 +34,7 @@ See [Architecture](docs/ARCHITECTURE.md), [Development](docs/DEVELOPMENT.md), an
 - [uv](https://docs.astral.sh/uv/)
 - Node.js 20.19+ and npm
 - Git
-- Ollama for local inference (Gemini and OpenRouter adapters are not implemented yet)
+- Ollama for local inference, or Gemini/OpenRouter credentials for cloud inference
 
 ## Set up the environment
 
@@ -86,13 +86,13 @@ uv run --project backend forge run --workspace . -- python --version
 uv run --project backend forge diff .
 ```
 
-`forge models` checks the configured Ollama service and lists its installed models. Set `OLLAMA_HOST` in `backend/.env.local` if Ollama is not using its default local address.
+`forge models` checks configured providers and lists available models. Set `OLLAMA_HOST` in `backend/.env.local` if Ollama is not using its default local address.
 
 `forge files`, `forge read`, and `forge search` provide bounded access to the selected workspace. `forge write` shows a diff and requires explicit confirmation before atomically creating or replacing a file. It refuses sensitive paths, symlinks, parent traversal, and paths outside the workspace. Do not pass secrets as command-line content because shells may retain command history.
 
 `forge run` allows only `git`, `npm`, `node`, `python`, `python3`, `pytest`, `ruff`, and `uv`. It displays the resolved executable, exact arguments, working directory, and timeout, then requires confirmation (default: no) for each invocation. It does not invoke a shell; execution has a timeout and bounded output, and only a small environment-variable allowlist is inherited. This is an approval gate, not an OS sandbox: an approved program runs as the current user and can access resources permitted to that account.
 
-The Ollama provider supports bounded, non-streaming text generation through the backend provider interface and authenticated API. The prompt runner and agent loop are not wired up yet; `forge -p ...` reports that limitation rather than sending a request. Gemini and OpenRouter are configuration placeholders until their adapters are implemented.
+Ollama, Gemini, and OpenRouter support bounded, non-streaming text generation through the backend provider interface and authenticated API. Set `DEFAULT_MODEL` to `ollama`, `gemini`, or `openrouter` to select the generation provider. The prompt runner and agent loop are not wired up yet; `forge -p ...` reports that limitation rather than sending a request.
 
 ## API endpoints
 
@@ -100,7 +100,7 @@ The Ollama provider supports bounded, non-streaming text generation through the 
 |---|---|---|
 | `GET` | `/api/v1/health` | Check whether the API is responding |
 | `GET` | `/api/v1/providers` | Read the default model and provider configuration status |
-| `POST` | `/api/v1/generate` | Generate a bounded response using the configured Ollama provider |
+| `POST` | `/api/v1/generate` | Generate a bounded response using the configured provider |
 
 Generation requires `Authorization: Bearer <FORGE_API_KEY>`. Set `FORGE_API_KEY` to a random value of at least 32 characters in `backend/.env.local`; production settings require it. The endpoint accepts at most 64 messages (up to 64,000 characters each) and limits generated output to 8,192 tokens. It does not expose workspace access or command execution.
 

@@ -6,7 +6,9 @@ import pytest
 from pydantic import ValidationError
 
 from forge.providers import (
+    GeminiProvider,
     OllamaProvider,
+    OpenRouterProvider,
     ProviderRequestError,
     ProviderResponseError,
     ProviderResponseTooLargeError,
@@ -23,6 +25,14 @@ def provider(handler, *, max_response_bytes: int = 1024) -> OllamaProvider:
         max_response_bytes=max_response_bytes,
         transport=httpx.MockTransport(handler),
     )
+
+
+def gemini_provider(handler) -> GeminiProvider:
+    return GeminiProvider("gemini-test-key", transport=httpx.MockTransport(handler))
+
+
+def openrouter_provider(handler) -> OpenRouterProvider:
+    return OpenRouterProvider("openrouter-test-key", transport=httpx.MockTransport(handler))
 
 
 def test_list_models_uses_ollama_tags_endpoint():
@@ -146,3 +156,82 @@ def test_provider_does_not_swallow_cancellation():
 
     with pytest.raises(asyncio.CancelledError):
         asyncio.run(provider(cancel).list_models())
+
+
+def test_gemini_lists_models_and_uses_server_side_key():
+    def respond(request: httpx.Request) -> httpx.Response:
+        assert request.method == "GET"
+        assert request.url.path == "/v1beta/models"
+        assert request.headers["x-goog-api-key"] == "gemini-test-key"
+        return httpx.Response(200, json={"models": [{"name": "models/gemini-2.5-flash"}]})
+
+    assert asyncio.run(gemini_provider(respond).list_models()) == ["gemini-2.5-flash"]
+
+
+def test_gemini_generates_with_neutral_messages():
+    def respond(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/v1beta/models/gemini-2.5-flash:generateContent"
+        assert json.loads(request.content) == {
+            "systemInstruction": {"parts": [{"text": "Be concise."}]},
+            "contents": [{"role": "user", "parts": [{"text": "Hello"}]}],
+            "generationConfig": {"maxOutputTokens": 128},
+        }
+        return httpx.Response(
+            200,
+            json={
+                "candidates": [
+                    {"content": {"role": "model", "parts": [{"text": "Hi there."}]}}
+                ]
+            },
+        )
+
+    result = asyncio.run(
+        gemini_provider(respond).generate(
+            GenerationRequest(
+                model="gemini-2.5-flash",
+                messages=[
+                    ChatMessage(role="system", content="Be concise."),
+                    ChatMessage(role="user", content="Hello"),
+                ],
+                max_tokens=128,
+            )
+        )
+    )
+
+    assert result.content == "Hi there."
+    assert result.done is True
+
+
+def test_openrouter_lists_models_and_generates_with_bearer_key():
+    def respond(request: httpx.Request) -> httpx.Response:
+        assert request.headers["authorization"] == "Bearer openrouter-test-key"
+        if request.url.path == "/api/v1/models":
+            return httpx.Response(200, json={"data": [{"id": "openai/gpt-4.1-mini"}]})
+        assert request.url.path == "/api/v1/chat/completions"
+        assert json.loads(request.content) == {
+            "model": "openai/gpt-4.1-mini",
+            "messages": [{"role": "user", "content": "Hello"}],
+            "max_tokens": 128,
+            "stream": False,
+        }
+        return httpx.Response(
+            200,
+            json={
+                "model": "openai/gpt-4.1-mini",
+                "choices": [{"message": {"role": "assistant", "content": "Hi there."}}],
+            },
+        )
+
+    provider_instance = openrouter_provider(respond)
+    assert asyncio.run(provider_instance.list_models()) == ["openai/gpt-4.1-mini"]
+    result = asyncio.run(
+        provider_instance.generate(
+            GenerationRequest(
+                model="openai/gpt-4.1-mini",
+                messages=[ChatMessage(role="user", content="Hello")],
+                max_tokens=128,
+            )
+        )
+    )
+    assert result.content == "Hi there."
+    assert result.done is True

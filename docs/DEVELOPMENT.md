@@ -24,10 +24,10 @@ Backend environment variables:
 |---|---|---|
 | `ENVIRONMENT` | `development` | Runtime environment: `development`, `test`, or `production` |
 | `FORGE_API_KEY` | empty | Bearer key for `POST /api/v1/generate`; at least 32 characters when set and required in production |
-| `GEMINI_API_KEY` | empty | Gemini credential; not used by an inference adapter yet |
-| `OPENROUTER_API_KEY` | empty | OpenRouter credential; not used by an inference adapter yet |
+| `GEMINI_API_KEY` | empty | Gemini credential for the Gemini REST adapter |
+| `OPENROUTER_API_KEY` | empty | OpenRouter credential for the OpenRouter REST adapter |
 | `OLLAMA_HOST` | `http://127.0.0.1:11434` | Ollama endpoint |
-| `DEFAULT_MODEL` | `ollama` | Default model label returned by the API |
+| `DEFAULT_MODEL` | `ollama` | Generation provider: `ollama`, `gemini`, or `openrouter` |
 | `CORS_ORIGINS` | `http://localhost:5173` | Comma-separated allowed browser origins |
 | `LOG_LEVEL` | `INFO` | Backend log level: `DEBUG`, `INFO`, `WARNING`, or `ERROR` |
 
@@ -39,13 +39,13 @@ Frontend environment variables:
 
 Generate an API key with `uv run --project backend python -c "import secrets; print(secrets.token_urlsafe(32))"`. Store it in `backend/.env.local`; do not commit it or put it in a `VITE_*` setting. The generation API requires this key in an `Authorization: Bearer ...` header and returns `503` until configured. Production mode requires both `FORGE_API_KEY` and `CORS_ORIGINS` with one or more HTTPS origins. Wildcards and localhost origins are rejected. Keep the local development settings for local use only.
 
-`OLLAMA_HOST` must be an HTTP(S) origin with no embedded credentials, URL path, or query string. To inspect the service and installed models:
+`OLLAMA_HOST` must be an HTTP(S) origin with no embedded credentials, URL path, or query string. Set `DEFAULT_MODEL` to `ollama`, `gemini`, or `openrouter` to select the generation provider. To inspect configured providers and their available models:
 
 ```powershell
 uv run --project backend forge models
 ```
 
-The Ollama adapter uses a 30-second timeout, limits response bodies to 2 MiB, and caps each generation request at 8,192 tokens. Authenticated generation is available at `POST /api/v1/generate`; the CLI prompt workflow and agent loop are not connected to it yet.
+All provider adapters use a 30-second timeout, limit response bodies to 2 MiB, and cap each generation request at 8,192 tokens. Authenticated generation is available at `POST /api/v1/generate`; the CLI prompt workflow and agent loop are not connected to it yet.
 
 ## Run locally
 

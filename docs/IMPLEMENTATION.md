@@ -17,6 +17,7 @@ This document is the implementation checklist and handoff point for the project.
 - [x] Add request IDs, request-completion logging, and validated runtime/CORS settings.
 - [x] Define a provider protocol and provider-neutral generation models.
 - [x] Implement the Ollama adapter with bounded requests, timeouts, cancellation, and safe error mapping.
+- [x] Implement Gemini and OpenRouter adapters through the shared provider interface.
 - [x] Add bounded workspace discovery, text reads/search, and instruction loading.
 - [x] Add preview-first file writes with explicit approval, stale-content checks, atomic replacement, and hash-only audit logs.
 - [x] Expose workspace operations through `forge files`, `forge read`, `forge search`, and `forge write`.
@@ -26,13 +27,12 @@ This document is the implementation checklist and handoff point for the project.
 ### Not implemented yet
 
 - [ ] Agent execution loop and interactive chat endpoint.
-- [ ] Gemini and OpenRouter inference adapters.
 - [ ] Session persistence, resume, and change history.
 - [ ] Frontend chat/session workflow and settings management.
 - [ ] Frontend automated tests and end-to-end coverage.
 - [ ] Production deployment, authentication, rate limiting, and operational observability.
 
-The Ollama adapter can list installed models and generate non-streaming text. `POST /api/v1/generate` exposes bounded generation behind `FORGE_API_KEY`; the prompt CLI and agent loop remain placeholders. Gemini and OpenRouter adapters remain planned.
+Ollama, Gemini, and OpenRouter adapters can list models and generate non-streaming text. `POST /api/v1/generate` exposes bounded generation behind `FORGE_API_KEY`; the prompt CLI and agent loop remain placeholders.
 
 ## Recommended implementation sequence
 
@@ -52,9 +52,9 @@ The Ollama adapter can list installed models and generate non-streaming text. `P
 - [x] Add timeouts, cancellation, bounded response handling, and safe error mapping.
 - [x] Keep provider credentials out of logs and browser payloads.
 - [x] Expose generation through `POST /api/v1/generate` with bearer-key authentication.
-- [ ] Implement Gemini and OpenRouter adapters.
+- [x] Implement Gemini and OpenRouter adapters.
 
-**Current result:** backend tests exercise Ollama model discovery and generation through the shared interface using a mock transport. The generation endpoint accepts bounded provider-neutral requests, requires `FORGE_API_KEY`, and maps upstream failures to the shared sanitized error contract. Cloud adapters and a user-facing chat/agent workflow remain follow-up work.
+**Current result:** backend tests exercise Ollama, Gemini, and OpenRouter model discovery and generation through the shared interface using mock transports. The generation endpoint accepts bounded provider-neutral requests, requires `FORGE_API_KEY`, dispatches through the configured default provider, and maps upstream failures to the shared sanitized error contract. A user-facing chat/agent workflow remains follow-up work.
 
 ### 3. Build the guarded agent core
 

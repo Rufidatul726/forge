@@ -127,16 +127,21 @@ def models() -> None:
         console.print(f"[yellow]{error.public_message}[/]")
 
     table.add_row("Ollama", "Local", ollama_status)
-    table.add_row(
-        "Gemini",
-        "Cloud API",
-        "Configured (adapter pending)" if settings.gemini_api_key else "Not configured",
-    )
-    table.add_row(
-        "OpenRouter",
-        "Cloud API",
-        "Configured (adapter pending)" if settings.openrouter_api_key else "Not configured",
-    )
+    for provider_name, label, configured in (
+        ("gemini", "Gemini", settings.gemini_api_key is not None),
+        ("openrouter", "OpenRouter", settings.openrouter_api_key is not None),
+    ):
+        status = "Not configured"
+        if configured:
+            try:
+                available_models = asyncio.run(
+                    get_provider(provider_name, settings).list_models()
+                )
+                status = "Available" if available_models else "No models available"
+            except ProviderError as error:
+                status = "Unavailable"
+                console.print(f"[yellow]{label}: {error.public_message}[/]")
+        table.add_row(label, "Cloud API", status)
     console.print(table)
     if ollama_models:
         console.print(f"Ollama models: {', '.join(ollama_models)}")

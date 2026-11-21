@@ -145,7 +145,7 @@ function App() {
               </div>
               <div className="card-label">SELECTED MODEL</div>
               <h2>{defaultModel}</h2>
-              <p>Set with <code>FORGE_DEFAULT_MODEL</code>.</p>
+              <p>Set with <code>DEFAULT_MODEL</code>.</p>
             </article>
           </section>
 

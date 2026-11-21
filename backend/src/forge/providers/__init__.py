@@ -7,6 +7,7 @@ from forge.providers.errors import (
     ProviderTimeoutError,
     ProviderUnavailableError,
 )
+from forge.providers.cloud import GeminiProvider, OpenRouterProvider
 from forge.providers.ollama import OllamaProvider
 from forge.providers.protocol import ModelProvider
 
@@ -17,12 +18,22 @@ def get_provider(name: str, settings: ForgeSettings | None = None) -> ModelProvi
         if not active_settings.ollama_host:
             raise ProviderUnavailableError
         return OllamaProvider(active_settings.ollama_host)
+    if name == "gemini":
+        if active_settings.gemini_api_key is None:
+            raise ProviderUnavailableError
+        return GeminiProvider(active_settings.gemini_api_key.get_secret_value())
+    if name == "openrouter":
+        if active_settings.openrouter_api_key is None:
+            raise ProviderUnavailableError
+        return OpenRouterProvider(active_settings.openrouter_api_key.get_secret_value())
     raise ValueError(f"Unsupported model provider: {name}")
 
 
 __all__ = [
+    "GeminiProvider",
     "ModelProvider",
     "OllamaProvider",
+    "OpenRouterProvider",
     "ProviderError",
     "ProviderRequestError",
     "ProviderResponseError",

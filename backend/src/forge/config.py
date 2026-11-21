@@ -13,8 +13,8 @@ _BACKEND_ROOT = Path(__file__).resolve().parents[2]
 class ForgeSettings(BaseSettings):
     environment: Literal["development", "test", "production"] = "development"
     forge_api_key: SecretStr | None = None
-    gemini_api_key: str | None = None
-    openrouter_api_key: str | None = None
+    gemini_api_key: SecretStr | None = None
+    openrouter_api_key: SecretStr | None = None
     ollama_host: str = "http://127.0.0.1:11434"
     default_model: str = "ollama"
     cors_origins: str = "http://localhost:5173"
@@ -26,7 +26,7 @@ class ForgeSettings(BaseSettings):
         validate_default=True,
     )
 
-    @field_validator("forge_api_key", mode="before")
+    @field_validator("forge_api_key", "gemini_api_key", "openrouter_api_key", mode="before")
     @classmethod
     def empty_api_key_is_unset(cls, value: object) -> object:
         return None if value == "" else value

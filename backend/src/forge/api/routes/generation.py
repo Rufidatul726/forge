@@ -44,7 +44,7 @@ async def generate(
     settings: ForgeSettings = Depends(get_settings),
     _: None = Depends(require_generation_api_key),
 ) -> GenerationResult:
-    if settings.default_model != "ollama":
+    if settings.default_model not in {"ollama", "gemini", "openrouter"}:
         raise HTTPException(status_code=501)
-    provider = get_provider("ollama", settings)
+    provider = get_provider(settings.default_model, settings)
     return await provider.generate(payload)
