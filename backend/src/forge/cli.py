@@ -12,12 +12,15 @@ from forge.config import ForgeSettings, forge_directory, instructions_path
 from forge.context import Workspace, WorkspaceError, WriteProposal
 from forge.execution import CommandError, CommandProposal, CommandRunner
 from forge.providers import ProviderError, get_provider
+from forge.sessions import SessionNotFoundError, SessionStore
 
 app = typer.Typer(
     name="forge",
     help="A model-agnostic AI coding agent for the terminal.",
     no_args_is_help=False,
 )
+sessions_app = typer.Typer(help="Manage persistent workspace sessions.")
+app.add_typer(sessions_app, name="sessions")
 console = Console()
 
 
@@ -108,6 +111,74 @@ def init(workspace: Path = typer.Argument(Path("."), help="Workspace to initiali
     if created:
         console.print(f"Created [bold]{instruction_file}[/]")
     console.print(f"Runtime directory: [bold]{forge_dir}[/]")
+
+
+def _session_store(workspace: Path) -> SessionStore:
+    return SessionStore(resolve_workspace(workspace))
+
+
+@sessions_app.command("create")
+def create_session(
+    title: str = typer.Option("New session", "--title", help="Session title."),
+    workspace: Path = typer.Option(Path("."), "--workspace", help="Workspace root."),
+) -> None:
+    try:
+        session = _session_store(workspace).create(title)
+    except ValueError as error:
+        console.print(f"[red]Could not create session:[/] {error}")
+        raise typer.Exit(code=1) from error
+    console.print(f"[green]Created session[/] {session.id}")
+
+
+@sessions_app.command("list")
+def list_sessions(
+    workspace: Path = typer.Option(Path("."), "--workspace", help="Workspace root."),
+) -> None:
+    sessions = _session_store(workspace).list()
+    if not sessions:
+        console.print("[dim]No saved sessions.[/]")
+        return
+    table = Table(title="Forge Sessions")
+    table.add_column("ID")
+    table.add_column("Title")
+    table.add_column("Turns")
+    table.add_column("Updated")
+    for session in sessions:
+        table.add_row(session.id, session.title, str(session.turn_count), session.updated_at)
+    console.print(table)
+
+
+@sessions_app.command("show")
+def show_session(
+    session_id: str = typer.Argument(help="Session ID."),
+    workspace: Path = typer.Option(Path("."), "--workspace", help="Workspace root."),
+) -> None:
+    try:
+        session = _session_store(workspace).get(session_id)
+    except SessionNotFoundError as error:
+        console.print("[red]Session was not found.[/]")
+        raise typer.Exit(code=1) from error
+    console.print(f"[bold]{session.summary.title}[/] ({session.summary.id})")
+    for turn in session.turns:
+        console.print(Text(f"{turn.role}: {turn.content}"))
+    if not session.turns:
+        console.print("[dim]No conversation turns.[/]")
+
+
+@sessions_app.command("delete")
+def delete_session(
+    session_id: str = typer.Argument(help="Session ID."),
+    workspace: Path = typer.Option(Path("."), "--workspace", help="Workspace root."),
+) -> None:
+    if not typer.confirm(f"Delete session {session_id}?", default=False):
+        console.print("[dim]Session was not deleted.[/]")
+        raise typer.Exit(code=1)
+    try:
+        _session_store(workspace).delete(session_id)
+    except SessionNotFoundError as error:
+        console.print("[red]Session was not found.[/]")
+        raise typer.Exit(code=1) from error
+    console.print("[green]Session deleted.[/]")
 
 
 @app.command()

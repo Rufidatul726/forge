@@ -15,6 +15,7 @@ class AgentTaskRequest(BaseModel):
     model: str = Field(min_length=1, max_length=255)
     messages: list[ChatMessage] = Field(min_length=1, max_length=32)
     context_paths: list[str] = Field(default_factory=list, max_length=MAX_CONTEXT_FILES)
+    session_id: str | None = Field(default=None, min_length=32, max_length=32, pattern=r"^[0-9a-f]+$")
     max_tokens: int = Field(default=1024, gt=0, le=8192)
 
     @field_validator("model")
@@ -29,6 +30,7 @@ class AgentTaskResult(BaseModel):
     generation: GenerationResult
     workspace_root: str
     context_paths: list[str]
+    session_id: str | None = None
     read_only: bool = True
 
 

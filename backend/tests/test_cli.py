@@ -195,3 +195,23 @@ def test_run_command_reports_timeout_with_timeout_exit_code(tmp_path):
 
     assert result.exit_code == 124
     assert "exceeded its timeout" in result.stdout
+
+
+def test_session_commands_share_the_workspace_store(tmp_path):
+    created = runner.invoke(
+        app,
+        ["sessions", "create", "--workspace", str(tmp_path), "--title", "Review"],
+    )
+
+    assert created.exit_code == 0
+    session_id = created.stdout.split()[-1]
+    listed = runner.invoke(app, ["sessions", "list", "--workspace", str(tmp_path)])
+    deleted = runner.invoke(
+        app,
+        ["sessions", "delete", session_id, "--workspace", str(tmp_path)],
+        input="y\n",
+    )
+
+    assert "Review" in listed.stdout
+    assert deleted.exit_code == 0
+    assert "Session deleted" in deleted.stdout

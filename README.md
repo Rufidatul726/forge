@@ -102,6 +102,10 @@ Ollama, Gemini, and OpenRouter support bounded, non-streaming text generation th
 | `GET` | `/api/v1/providers` | Read the default model and provider configuration status |
 | `POST` | `/api/v1/generate` | Generate a bounded response using the configured provider |
 | `POST` | `/api/v1/agent/tasks` | Run a read-only repository task in the configured workspace |
+| `POST` | `/api/v1/sessions` | Create a persistent workspace session |
+| `GET` | `/api/v1/sessions` | List persistent workspace sessions |
+| `GET` | `/api/v1/sessions/{session_id}` | Read a saved session, turns, and outcomes |
+| `DELETE` | `/api/v1/sessions/{session_id}` | Delete one saved session |
 
 Generation requires `Authorization: Bearer <FORGE_API_KEY>`. Set `FORGE_API_KEY` to a random value of at least 32 characters in `backend/.env.local`; production settings require it. The endpoint accepts at most 64 messages (up to 64,000 characters each) and limits generated output to 8,192 tokens. It does not expose workspace access or command execution.
 
@@ -128,6 +132,10 @@ These are initial integration endpoints, not the agent execution API.
   "context_paths": ["main.py"]
 }
 ```
+
+### Persistent sessions
+
+Sessions are stored in SQLite at `<AGENT_WORKSPACE_ROOT>/.forge/sessions.sqlite3`; that directory is excluded from workspace reads. Session routes require the same bearer key and use the configured workspace root. Create a session, provide its 32-character ID as `session_id` in later agent task requests, and Forge restores prior turns before the new message. Task responses and generation metadata are appended after a successful request. The CLI exposes the same store through `forge sessions create`, `list`, `show`, and `delete`; deletion requires confirmation.
 
 Every API response includes an `X-Request-ID` header. Errors use a consistent JSON contract:
 

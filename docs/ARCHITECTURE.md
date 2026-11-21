@@ -50,6 +50,10 @@ The CLI exposes these capabilities as `forge files`, `forge read`, `forge search
 
 `POST /api/v1/agent/tasks` reuses the same `Workspace` service for a stateless, read-only task. Its root comes only from server-side `AGENT_WORKSPACE_ROOT`; callers may request up to 10 workspace-relative context files, while the service also provides a bounded file list and optional `FORGE.md`. The route never invokes workspace writes or command execution.
 
+## Session persistence
+
+`backend/src/forge/sessions/store.py` owns a versioned SQLite store at `<workspace>/.forge/sessions.sqlite3`. It persists session metadata, ordered conversation turns, and non-text generation outcome metadata. SQLite foreign keys cascade session deletion to its turns and outcomes. The API and CLI both instantiate this service against an explicit workspace root; no session data is stored in browser state. A task request with a saved session ID restores prior turns, then appends the new turns, assistant reply, and generation metadata after successful completion.
+
 `backend/src/forge/execution/commands.py` implements `forge run`. It allows only `git`, `npm`, `node`, `python`, `python3`, `pytest`, `ruff`, and `uv`; rejects executable paths and shell interpreters; invokes processes without a shell; requires a per-command approval callback; and limits arguments, execution time, and captured output. The CLI shows the resolved executable, full argument vector, workspace-relative cwd, and timeout before prompting with a default of no. The process receives only a small environment allowlist plus `PYTHONIOENCODING` and `UV_OFFLINE`; audit records omit arguments and process output. Timeouts and cancellation terminate the process group on POSIX and use Windows `taskkill /T /F` with parent-process fallback. Workspace cwd restrictions and explicit approval are not a security sandbox: approved programs still run with the current user's OS permissions. Command execution is currently CLI-only and is not exposed through the HTTP API.
 
 ## Current API contract
@@ -83,6 +87,12 @@ Requires `Authorization: Bearer <FORGE_API_KEY>`. The configured key must be at 
 
 Requires `Authorization: Bearer <FORGE_API_KEY>` and a server-configured `AGENT_WORKSPACE_ROOT`. The request accepts a model, 1-32 provider-neutral chat messages, an output limit, and up to 10 workspace-relative context paths. The service builds bounded, read-only context from the configured workspace and sends it to the selected provider. It returns the generation result, configured workspace root, context paths, and `read_only: true`. It does not accept arbitrary filesystem roots, write files, execute commands, persist sessions, or stream output.
 
+When `session_id` is supplied, the route restores the saved conversation before generation and records the new turns, assistant reply, and generation metadata after success. It remains read-only with respect to project files.
+
+### Session endpoints
+
+`POST /api/v1/sessions`, `GET /api/v1/sessions`, `GET /api/v1/sessions/{session_id}`, and `DELETE /api/v1/sessions/{session_id}` require the generation bearer key and configured agent workspace root. They create, list, retrieve, and delete sessions in the workspace-local SQLite store. Session IDs are opaque UUID values; deletion targets one exact ID and cascades only its associated turns and outcomes.
+
 ## Error and request tracing contract
 
 All responses include a server-generated `X-Request-ID`. The ID is also present in request-completion logs and in the JSON body for errors. Validation errors include field locations, error messages, and types, but never echo submitted values. Unexpected errors return a generic message; logs record the exception type without exception text.
@@ -110,6 +120,7 @@ Errors use this shape:
 - `CORS_ORIGINS` is a comma-separated allowlist. Production requires explicit HTTPS origins and rejects wildcard and localhost origins.
 - `FORGE_API_KEY` is a server-only bearer key for model generation; production requires a key of at least 32 characters.
 - `AGENT_WORKSPACE_ROOT` is a server-only, explicit root for the read-only agent task endpoint; callers cannot override it.
+- Session data is retained at `AGENT_WORKSPACE_ROOT/.forge/sessions.sqlite3`, which workspace tools exclude from readable context.
 - `ENVIRONMENT` selects `development`, `test`, or `production`; `LOG_LEVEL` selects the backend log level.
 - The API allows GET and POST plus the Authorization header and does not enable credentialed CORS.
 - The UI displays backend connection failures; it does not treat an unavailable API as a successful response.
