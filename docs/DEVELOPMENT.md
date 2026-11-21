@@ -69,7 +69,12 @@ Run the CLI from the repository root:
 
 ```powershell
 uv run --project backend forge --help
+uv run --project backend forge files .
+uv run --project backend forge read README.md
+uv run --project backend forge search "TODO"
 ```
+
+The workspace commands are read-only. They reject absolute paths, parent traversal, escaped symlinks, sensitive files, and common generated directories. Reads are capped at 1 MiB per file; searches also cap candidate files and result lines. Use a narrower `--pattern` for large repositories.
 
 ## Tests and builds
 

@@ -7,6 +7,7 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
+from forge.context import Workspace, WorkspaceError
 from forge.config import ForgeSettings, forge_directory, instructions_path
 from forge.providers import ProviderError, get_provider
 
@@ -137,6 +138,72 @@ def models() -> None:
     console.print(table)
     if ollama_models:
         console.print(f"Ollama models: {', '.join(ollama_models)}")
+
+
+@app.command("files")
+def list_files(
+    workspace: Path = typer.Argument(Path("."), help="Workspace to inspect."),
+    pattern: str = typer.Option("**/*", "--pattern", help="Relative glob pattern."),
+    limit: int = typer.Option(200, min=1, max=1000, help="Maximum files to list."),
+) -> None:
+    root = resolve_workspace(workspace)
+    try:
+        result = Workspace(root).list_files(pattern, limit=limit)
+    except (WorkspaceError, ValueError) as error:
+        console.print(f"[red]Could not list workspace files:[/] {error}")
+        raise typer.Exit(code=1) from error
+
+    for path in result.paths:
+        console.print(path, markup=False)
+    if result.truncated:
+        console.print("[yellow]File list truncated; narrow the pattern or increase the limit.[/]")
+    elif not result.paths:
+        console.print("[dim]No readable files matched.[/]")
+
+
+@app.command("read")
+def read_file(
+    path: str = typer.Argument(help="Workspace-relative file path."),
+    workspace: Path = typer.Option(Path("."), "--workspace", help="Workspace root."),
+) -> None:
+    root = resolve_workspace(workspace)
+    try:
+        content = Workspace(root).read_text(path)
+    except WorkspaceError as error:
+        console.print(f"[red]Could not read workspace file:[/] {error}")
+        raise typer.Exit(code=1) from error
+    console.print(content, markup=False, end="")
+
+
+@app.command("search")
+def search_files(
+    query: str = typer.Argument(help="Text to search for."),
+    workspace: Path = typer.Option(Path("."), "--workspace", help="Workspace root."),
+    pattern: str = typer.Option("**/*", "--pattern", help="Relative glob pattern."),
+    limit: int = typer.Option(100, min=1, max=1000, help="Maximum matching lines."),
+    case_sensitive: bool = typer.Option(False, "--case-sensitive", help="Match case exactly."),
+) -> None:
+    root = resolve_workspace(workspace)
+    try:
+        result = Workspace(root).search_text(
+            query,
+            pattern=pattern,
+            limit=limit,
+            case_sensitive=case_sensitive,
+        )
+    except (WorkspaceError, ValueError) as error:
+        console.print(f"[red]Could not search workspace:[/] {error}")
+        raise typer.Exit(code=1) from error
+
+    for match in result.matches:
+        line = f"{match.line}…" if match.line_truncated else match.line
+        console.print(f"{match.path}:{match.line_number}: {line}", markup=False)
+    if result.files_skipped:
+        console.print(f"[yellow]Skipped {result.files_skipped} unreadable or oversized file(s).[/]")
+    if result.truncated:
+        console.print("[yellow]Search results truncated; narrow the pattern or increase the limit.[/]")
+    elif not result.matches:
+        console.print("[dim]No matches found.[/]")
 
 
 @app.command()

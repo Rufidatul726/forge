@@ -41,6 +41,12 @@ The first adapter is `OllamaProvider`:
 
 Gemini and OpenRouter credentials may be configured but their adapters are not implemented. Provider API keys must remain server-side and must not be included in logs or frontend responses.
 
+## Read-only workspace context
+
+`backend/src/forge/context/workspace.py` provides bounded workspace file discovery, UTF-8 reads, text search, and optional `FORGE.md` instruction loading. Operations accept workspace-relative paths and patterns, reject traversal and absolute paths, resolve symlinks before access, and exclude common generated directories and credential-bearing files. Reads and scans have byte, result, and candidate limits. Binary and oversized files are skipped in searches and reported in the result metadata.
+
+The CLI exposes these capabilities as `forge files`, `forge read`, and `forge search`. The core is read-only: file writes and subprocess execution are not implemented. Workspace paths are an access boundary for normal use, not a sandbox against malicious code already running with the same OS account.
+
 ## Current API contract
 
 ### `GET /api/v1/health`

@@ -57,3 +57,36 @@ def test_models_reports_ollama_errors(monkeypatch):
     assert result.exit_code == 0
     assert "configured model provider is unavailable" in result.stdout
     assert "Unavailable" in result.stdout
+
+
+def test_files_command_lists_workspace_files(tmp_path):
+    (tmp_path / "main.py").write_text("print('hello')", encoding="utf-8")
+    (tmp_path / ".env").write_text("secret", encoding="utf-8")
+
+    result = runner.invoke(app, ["files", str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert "main.py" in result.stdout
+    assert ".env" not in result.stdout
+
+
+def test_read_command_refuses_paths_outside_workspace(tmp_path):
+    secret = tmp_path.parent / f"{tmp_path.name}-secret.txt"
+    secret.write_text("not for the workspace", encoding="utf-8")
+
+    result = runner.invoke(app, ["read", str(secret), "--workspace", str(tmp_path)])
+
+    assert result.exit_code == 1
+    assert "Could not read workspace file" in result.stdout
+    assert "not for the workspace" not in result.stdout
+
+
+def test_search_command_reports_workspace_matches(tmp_path):
+    (tmp_path / "main.py").write_text("forge is ready\n", encoding="utf-8")
+    (tmp_path / ".env").write_text("forge secret\n", encoding="utf-8")
+
+    result = runner.invoke(app, ["search", "forge", "--workspace", str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert "main.py:1: forge is ready" in result.stdout
+    assert "forge secret" not in result.stdout

@@ -17,14 +17,15 @@ This document is the implementation checklist and handoff point for the project.
 - [x] Add request IDs, request-completion logging, and validated runtime/CORS settings.
 - [x] Define a provider protocol and provider-neutral generation models.
 - [x] Implement the Ollama adapter with bounded requests, timeouts, cancellation, and safe error mapping.
+- [x] Add read-only workspace discovery, bounded text reads/search, and workspace instructions loading.
+- [x] Expose the read-only workspace operations through `forge files`, `forge read`, and `forge search`.
 
 ### Not implemented yet
 
 - [ ] Agent execution loop and interactive chat endpoint.
 - [ ] Gemini and OpenRouter inference adapters.
 - [ ] Expose provider generation through an API or user-facing one-shot command.
-- [ ] Repository context, file/search tools, and safe workspace boundaries.
-- [ ] Permission prompts and controlled terminal execution.
+- [ ] File write tools, permission prompts, and controlled terminal execution.
 - [ ] Session persistence, resume, and change history.
 - [ ] Frontend chat/session workflow and settings management.
 - [ ] Frontend automated tests and end-to-end coverage.
@@ -55,11 +56,13 @@ The Ollama adapter can list installed models and generate non-streaming text for
 
 ### 3. Build the guarded agent core
 
-- Add workspace context discovery and explicit workspace-root boundaries.
-- Implement read/search tools before write/command tools.
+- [x] Add workspace context discovery and explicit workspace-root boundaries.
+- [x] Implement bounded read/list/search tools before write/command tools.
 - Require clear permission policy for file writes and subprocess execution.
 - Add tool input validation, timeouts, cancellation, and auditable results.
 - Connect the CLI and HTTP API to shared agent services rather than duplicating behavior.
+
+**Current result:** read-only workspace inspection is available from the CLI and shared backend service, with traversal, symlink escape, secret-file, size, and scan-limit checks. Agent execution, file writes, and terminal commands are intentionally still unavailable.
 
 **Done when:** a bounded task can run against a test workspace, with denied actions remaining non-mutating and all changes inspectable.
 

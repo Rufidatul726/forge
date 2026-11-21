@@ -12,6 +12,7 @@ forge/
 │   ├── src/forge/
 │   │   ├── api/              # FastAPI application and HTTP routes
 │   │   ├── providers/        # Provider interface and model adapters
+│   │   ├── context/          # Read-only workspace discovery and search
 │   │   ├── cli.py            # Typer terminal interface
 │   │   └── config.py         # Environment-backed settings
 │   ├── tests/
@@ -76,10 +77,15 @@ From the repository root:
 uv run --project backend forge --help
 uv run --project backend forge init .
 uv run --project backend forge models
+uv run --project backend forge files .
+uv run --project backend forge read README.md
+uv run --project backend forge search "TODO"
 uv run --project backend forge diff .
 ```
 
 `forge models` checks the configured Ollama service and lists its installed models. Set `OLLAMA_HOST` in `backend/.env.local` if Ollama is not using its default local address.
+
+`forge files`, `forge read`, and `forge search` provide read-only access bounded to the selected workspace. Sensitive files, generated directories, and paths outside the workspace are excluded.
 
 The Ollama provider supports bounded, non-streaming text generation through the backend provider interface. The prompt runner and agent loop are not wired up yet; `forge -p ...` reports that limitation rather than sending a request. Gemini and OpenRouter are configuration placeholders until their adapters are implemented.
 
