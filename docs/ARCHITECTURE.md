@@ -37,7 +37,7 @@ The first adapter is `OllamaProvider`:
 - Requests have a 30-second timeout, generation is capped at 8,192 tokens, and response bodies are limited to 2 MiB.
 - Network, timeout, HTTP, malformed response, and oversized response failures map to typed provider errors without returning upstream response bodies.
 - Cancellation is not swallowed.
-- `forge models` exercises model discovery. Generation is available to backend callers but is not yet exposed through an API route or wired into the agent/CLI prompt workflow.
+- `forge models` exercises model discovery. `POST /api/v1/generate` exposes bounded generation behind a bearer API key; the CLI prompt workflow and agent loop are not connected to it yet.
 
 Gemini and OpenRouter credentials may be configured but their adapters are not implemented. Provider API keys must remain server-side and must not be included in logs or frontend responses.
 
@@ -45,7 +45,9 @@ Gemini and OpenRouter credentials may be configured but their adapters are not i
 
 `backend/src/forge/context/workspace.py` provides bounded workspace file discovery, UTF-8 reads, text search, optional `FORGE.md` instruction loading, and guarded file writes. Operations accept workspace-relative paths and patterns, reject traversal and absolute paths, resolve symlinks before access, and exclude common generated directories and credential-bearing files. Reads and scans have byte, result, and candidate limits. Binary and oversized files are skipped in searches and reported in the result metadata.
 
-The CLI exposes these capabilities as `forge files`, `forge read`, `forge search`, and `forge write`. Writes are proposed as a unified diff and require an explicit confirmation callback; the operation rechecks the previous content hash after approval, writes through a temporary file followed by atomic replacement, and returns/logs hashes and byte counts without file contents. Write targets must not be symlinks and their parent directories must already exist. Shell command execution is not implemented. Workspace paths are an access boundary for normal use, not a sandbox against malicious code already running with the same OS account.
+The CLI exposes these capabilities as `forge files`, `forge read`, `forge search`, and `forge write`. Writes are proposed as a unified diff and require an explicit confirmation callback; the operation rechecks the previous content hash after approval, writes through a temporary file followed by atomic replacement, and returns/logs hashes and byte counts without file contents. Write targets must not be symlinks and their parent directories must already exist.
+
+`backend/src/forge/execution/commands.py` implements `forge run`. It allows only `git`, `npm`, `node`, `python`, `python3`, `pytest`, `ruff`, and `uv`; rejects executable paths and shell interpreters; invokes processes without a shell; requires a per-command approval callback; and limits arguments, execution time, and captured output. The CLI shows the resolved executable, full argument vector, workspace-relative cwd, and timeout before prompting with a default of no. The process receives only a small environment allowlist plus `PYTHONIOENCODING` and `UV_OFFLINE`; audit records omit arguments and process output. Timeouts and cancellation terminate the process group on POSIX and use Windows `taskkill /T /F` with parent-process fallback. Workspace cwd restrictions and explicit approval are not a security sandbox: approved programs still run with the current user's OS permissions. Command execution is currently CLI-only and is not exposed through the HTTP API.
 
 ## Current API contract
 
@@ -69,6 +71,10 @@ Returns the configured default model and whether supported provider settings are
 ```
 
 The Ollama `configured` value indicates that an endpoint is configured; it does not prove a model is installed or that the endpoint is reachable. These initial routes do not execute agent tasks.
+
+### `POST /api/v1/generate`
+
+Requires `Authorization: Bearer <FORGE_API_KEY>`. The configured key must be at least 32 characters, and production settings require it. The request uses the provider-neutral `GenerationRequest` schema (`model`, 1-64 messages, and `max_tokens` from 1 to 8,192); individual message content is capped at 64,000 characters. The current route dispatches only to Ollama. Success returns a `GenerationResult` with the model, assistant content, and completion flag. Authentication failures, unsupported providers, provider failures, and timeouts use the common error envelope with 401, 501, 502/503, or 504 status codes. The endpoint does not read or modify workspaces and does not execute commands.
 
 ## Error and request tracing contract
 
@@ -95,10 +101,11 @@ Errors use this shape:
 - `VITE_*` values are included in browser code and are public. Provider secrets belong only in the backend.
 - `OLLAMA_HOST` is validated as an HTTP(S) origin; embedded credentials, paths, and query parameters are rejected.
 - `CORS_ORIGINS` is a comma-separated allowlist. Production requires explicit HTTPS origins and rejects wildcard and localhost origins.
+- `FORGE_API_KEY` is a server-only bearer key for model generation; production requires a key of at least 32 characters.
 - `ENVIRONMENT` selects `development`, `test`, or `production`; `LOG_LEVEL` selects the backend log level.
-- The API allows only the methods and headers currently needed by the dashboard and does not enable credentialed CORS.
+- The API allows GET and POST plus the Authorization header and does not enable credentialed CORS.
 - The UI displays backend connection failures; it does not treat an unavailable API as a successful response.
-- Workspace write operations require explicit approval; generated command execution remains unavailable.
+- Workspace writes and CLI commands require explicit approval; neither capability is exposed through the HTTP API. Generation is separately protected by the API key.
 
 ## Extension conventions
 

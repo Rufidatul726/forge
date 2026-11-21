@@ -12,7 +12,8 @@ forge/
 │   ├── src/forge/
 │   │   ├── api/              # FastAPI application and HTTP routes
 │   │   ├── providers/        # Provider interface and model adapters
-│   │   ├── context/          # Read-only workspace discovery and search
+│   │   ├── context/          # Workspace discovery, search, and guarded writes
+│   │   ├── execution/        # Explicitly approved development commands
 │   │   ├── cli.py            # Typer terminal interface
 │   │   └── config.py         # Environment-backed settings
 │   ├── tests/
@@ -81,6 +82,7 @@ uv run --project backend forge files .
 uv run --project backend forge read README.md
 uv run --project backend forge search "TODO"
 uv run --project backend forge write src/example.py --content "print('hello')"
+uv run --project backend forge run --workspace . -- python --version
 uv run --project backend forge diff .
 ```
 
@@ -88,7 +90,9 @@ uv run --project backend forge diff .
 
 `forge files`, `forge read`, and `forge search` provide bounded access to the selected workspace. `forge write` shows a diff and requires explicit confirmation before atomically creating or replacing a file. It refuses sensitive paths, symlinks, parent traversal, and paths outside the workspace. Do not pass secrets as command-line content because shells may retain command history.
 
-The Ollama provider supports bounded, non-streaming text generation through the backend provider interface. The prompt runner and agent loop are not wired up yet; `forge -p ...` reports that limitation rather than sending a request. Gemini and OpenRouter are configuration placeholders until their adapters are implemented.
+`forge run` allows only `git`, `npm`, `node`, `python`, `python3`, `pytest`, `ruff`, and `uv`. It displays the resolved executable, exact arguments, working directory, and timeout, then requires confirmation (default: no) for each invocation. It does not invoke a shell; execution has a timeout and bounded output, and only a small environment-variable allowlist is inherited. This is an approval gate, not an OS sandbox: an approved program runs as the current user and can access resources permitted to that account.
+
+The Ollama provider supports bounded, non-streaming text generation through the backend provider interface and authenticated API. The prompt runner and agent loop are not wired up yet; `forge -p ...` reports that limitation rather than sending a request. Gemini and OpenRouter are configuration placeholders until their adapters are implemented.
 
 ## API endpoints
 
@@ -96,8 +100,21 @@ The Ollama provider supports bounded, non-streaming text generation through the 
 |---|---|---|
 | `GET` | `/api/v1/health` | Check whether the API is responding |
 | `GET` | `/api/v1/providers` | Read the default model and provider configuration status |
+| `POST` | `/api/v1/generate` | Generate a bounded response using the configured Ollama provider |
 
-These are initial integration endpoints, not the agent execution API. Provider inference is not exposed as an HTTP endpoint yet.
+Generation requires `Authorization: Bearer <FORGE_API_KEY>`. Set `FORGE_API_KEY` to a random value of at least 32 characters in `backend/.env.local`; production settings require it. The endpoint accepts at most 64 messages (up to 64,000 characters each) and limits generated output to 8,192 tokens. It does not expose workspace access or command execution.
+
+Example request body:
+
+```json
+{
+  "model": "qwen2.5-coder:7b",
+  "messages": [{"role": "user", "content": "Explain this code"}],
+  "max_tokens": 1024
+}
+```
+
+These are initial integration endpoints, not the agent execution API.
 
 Every API response includes an `X-Request-ID` header. Errors use a consistent JSON contract:
 
@@ -114,7 +131,7 @@ Validation errors may include sanitized field locations and messages. Unexpected
 
 `backend/.env.local` accepts `ENVIRONMENT` (`development`, `test`, or `production`), provider settings, `DEFAULT_MODEL`, `CORS_ORIGINS`, and `LOG_LEVEL` (`DEBUG`, `INFO`, `WARNING`, or `ERROR`). Environment variables override the local file.
 
-For production, set `ENVIRONMENT=production` and explicitly configure HTTPS origins in `CORS_ORIGINS`. The backend rejects wildcard, malformed, and localhost production origins. The development defaults are intended only for local use.
+`FORGE_API_KEY` must be at least 32 characters when set. Generate one with `uv run --project backend python -c "import secrets; print(secrets.token_urlsafe(32))"` and keep it server-side. For production, set `ENVIRONMENT=production`, configure `FORGE_API_KEY`, and explicitly configure HTTPS origins in `CORS_ORIGINS`. The backend rejects wildcard, malformed, and localhost production origins. The development defaults are intended only for local use.
 
 ## Validation
 
@@ -138,7 +155,7 @@ Additional setup and troubleshooting notes are in [Development](docs/DEVELOPMENT
 - Keep credentials in `backend/.env.local` or in the process environment.
 - Do not use secrets in `VITE_*` variables; frontend build-time variables are public.
 - The API's development CORS allowlist is configured with `CORS_ORIGINS`.
-- Workspace permissions, command execution controls, and model-generated tool safety are required before the agent runtime can execute changes. See [Implementation status and steps](docs/IMPLEMENTATION.md).
+- Command execution requires explicit per-command approval and is not exposed through the API. User authentication and model-generated tool safety are still required before remote agent workflows are exposed; the generation API key is not user identity. See [Implementation status and steps](docs/IMPLEMENTATION.md).
 
 ## License
 

@@ -6,11 +6,10 @@ from collections.abc import Mapping
 import httpx
 import pytest
 from fastapi import FastAPI
-from pydantic import ValidationError
-
 from forge.api.errors import ERROR_RESPONSES
 from forge.api.main import create_app
 from forge.config import ForgeSettings
+from pydantic import ValidationError
 
 
 def request(
@@ -19,12 +18,18 @@ def request(
     path: str,
     *,
     headers: Mapping[str, str] | None = None,
+    json_body: Mapping[str, object] | None = None,
     raise_app_exceptions: bool = True,
 ) -> httpx.Response:
     async def send_request() -> httpx.Response:
         transport = httpx.ASGITransport(app=app, raise_app_exceptions=raise_app_exceptions)
         async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
-            return await client.request(method, path, headers=headers)
+            return await client.request(
+                method,
+                path,
+                headers=headers,
+                json=json_body,
+            )
 
     return asyncio.run(send_request())
 
@@ -62,6 +67,129 @@ def test_provider_endpoint_uses_injected_settings():
     providers = {provider["name"]: provider for provider in payload["providers"]}
     assert providers["gemini"]["configured"] is True
     assert providers["openrouter"]["configured"] is False
+
+
+def test_generation_endpoint_requires_configured_and_valid_api_key():
+    payload = {
+        "model": "qwen2.5-coder:7b",
+        "messages": [{"role": "user", "content": "Explain this code"}],
+    }
+    unconfigured = request(
+        create_app(ForgeSettings(_env_file=None)),
+        "POST",
+        "/api/v1/generate",
+        json_body=payload,
+    )
+    configured_app = create_app(
+        ForgeSettings(_env_file=None, forge_api_key="a" * 40)
+    )
+    unauthorized = request(
+        configured_app,
+        "POST",
+        "/api/v1/generate",
+        headers={"Authorization": f"Bearer {'b' * 40}"},
+        json_body=payload,
+    )
+
+    assert unconfigured.status_code == 503
+    assert unconfigured.json()["error"]["code"] == "service_unavailable"
+    assert unauthorized.status_code == 401
+    assert unauthorized.json()["error"]["code"] == "unauthorized"
+
+
+def test_generation_endpoint_calls_selected_provider_and_returns_result(monkeypatch):
+    from forge.providers.models import GenerationResult
+
+    class FakeProvider:
+        async def generate(self, payload):
+            assert payload.model == "qwen2.5-coder:7b"
+            assert payload.messages[0].content == "Explain this code"
+            return GenerationResult(
+                model=payload.model,
+                content="It maps each item.",
+                done=True,
+            )
+
+    provider_names = []
+
+    def fake_get_provider(name, settings):
+        provider_names.append(name)
+        return FakeProvider()
+
+    monkeypatch.setattr("forge.api.routes.generation.get_provider", fake_get_provider)
+    api_key = "a" * 40
+    response = request(
+        create_app(ForgeSettings(_env_file=None, forge_api_key=api_key)),
+        "POST",
+        "/api/v1/generate",
+        headers={"Authorization": f"Bearer {api_key}"},
+        json_body={
+            "model": "qwen2.5-coder:7b",
+            "messages": [{"role": "user", "content": "Explain this code"}],
+            "max_tokens": 128,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "model": "qwen2.5-coder:7b",
+        "content": "It maps each item.",
+        "done": True,
+    }
+    assert provider_names == ["ollama"]
+    assert api_key not in response.text
+
+
+def test_generation_endpoint_maps_provider_errors_to_safe_contract(monkeypatch):
+    from forge.providers import ProviderTimeoutError
+
+    class FakeProvider:
+        async def generate(self, payload):
+            raise ProviderTimeoutError("private upstream detail")
+
+    monkeypatch.setattr(
+        "forge.api.routes.generation.get_provider",
+        lambda name, settings: FakeProvider(),
+    )
+    api_key = "a" * 40
+    response = request(
+        create_app(ForgeSettings(_env_file=None, forge_api_key=api_key)),
+        "POST",
+        "/api/v1/generate",
+        headers={"Authorization": f"Bearer {api_key}"},
+        json_body={
+            "model": "qwen2.5-coder:7b",
+            "messages": [{"role": "user", "content": "Hello"}],
+        },
+        raise_app_exceptions=False,
+    )
+
+    assert response.status_code == 504
+    assert response.json()["error"]["code"] == "provider_timeout"
+    assert "private upstream detail" not in response.text
+
+
+def test_generation_endpoint_rejects_unimplemented_default_provider():
+    api_key = "a" * 40
+    response = request(
+        create_app(
+            ForgeSettings(
+                _env_file=None,
+                forge_api_key=api_key,
+                default_model="gemini",
+            )
+        ),
+        "POST",
+        "/api/v1/generate",
+        headers={"Authorization": f"Bearer {api_key}"},
+        json_body={
+            "model": "gemini-2.5-pro",
+            "messages": [{"role": "user", "content": "Hello"}],
+        },
+    )
+
+    assert response.status_code == 501
+    assert response.json()["error"]["code"] == "provider_not_implemented"
 
 
 def test_unknown_route_returns_stable_error_contract(app: FastAPI):
@@ -134,23 +262,68 @@ def test_cors_allows_configured_frontend_origin(app: FastAPI):
         "/api/v1/health",
         headers={"Origin": "http://localhost:5173"},
     )
+    generation_preflight = request(
+        app,
+        "OPTIONS",
+        "/api/v1/generate",
+        headers={
+            "Origin": "http://localhost:5173",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "authorization,content-type",
+        },
+    )
 
     assert preflight.headers["Access-Control-Allow-Origin"] == "http://localhost:5173"
     assert "Access-Control-Allow-Credentials" not in preflight.headers
     assert "GET" in preflight.headers["Access-Control-Allow-Methods"]
+    assert "POST" in generation_preflight.headers["Access-Control-Allow-Methods"]
+    assert (
+        "authorization"
+        in generation_preflight.headers["Access-Control-Allow-Headers"].lower()
+    )
     assert response.headers["Access-Control-Expose-Headers"] == "X-Request-ID"
 
 
 def test_production_settings_require_explicit_secure_cors_origins():
+    api_key = "a" * 40
+    with pytest.raises(ValidationError, match="requires FORGE_API_KEY"):
+        ForgeSettings(
+            _env_file=None,
+            environment="production",
+            cors_origins="https://forge.example.com",
+        )
+
     with pytest.raises(ValidationError, match="Production CORS origins"):
-        ForgeSettings(_env_file=None, environment="production")
+        ForgeSettings(
+            _env_file=None,
+            environment="production",
+            forge_api_key=api_key,
+        )
 
     settings = ForgeSettings(
         _env_file=None,
         environment="production",
         cors_origins="https://forge.example.com",
+        forge_api_key=api_key,
     )
     assert settings.allowed_origins == ["https://forge.example.com"]
+
+
+def test_generation_api_key_is_optional_in_development_but_strong_when_set():
+    assert ForgeSettings(_env_file=None, forge_api_key="").forge_api_key is None
+    with pytest.raises(ValidationError, match="at least 32 characters"):
+        ForgeSettings(_env_file=None, forge_api_key="too-short")
+
+
+def test_generation_api_key_uses_expected_environment_variable(monkeypatch):
+    api_key = "a" * 40
+    monkeypatch.setenv("FORGE_API_KEY", api_key)
+
+    settings = ForgeSettings(_env_file=None)
+
+    assert settings.forge_api_key is not None
+    assert settings.forge_api_key.get_secret_value() == api_key
+    assert api_key not in repr(settings)
 
 
 @pytest.mark.parametrize(
@@ -165,6 +338,7 @@ def test_settings_reject_invalid_cors_origins(cors_origins: str):
 def test_openapi_documents_error_contracts(app: FastAPI):
     schema = request(app, "GET", "/openapi.json").json()
     responses = schema["paths"]["/api/v1/providers"]["get"]["responses"]
+    generation = schema["paths"]["/api/v1/generate"]["post"]
 
     assert responses["404"]["content"]["application/json"]["schema"]["$ref"].endswith(
         "/ErrorResponse"
@@ -175,3 +349,5 @@ def test_openapi_documents_error_contracts(app: FastAPI):
     assert responses["500"]["content"]["application/json"]["schema"]["$ref"].endswith(
         "/ErrorResponse"
     )
+    assert generation["security"] == [{"ForgeBearer": []}]
+    assert "ForgeBearer" in schema["components"]["securitySchemes"]

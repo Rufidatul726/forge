@@ -4,15 +4,15 @@ from pathlib import Path
 from typing import Literal
 from urllib.parse import urlsplit
 
-from pydantic import field_validator, model_validator
+from pydantic import SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
-
 
 _BACKEND_ROOT = Path(__file__).resolve().parents[2]
 
 
 class ForgeSettings(BaseSettings):
     environment: Literal["development", "test", "production"] = "development"
+    forge_api_key: SecretStr | None = None
     gemini_api_key: str | None = None
     openrouter_api_key: str | None = None
     ollama_host: str = "http://127.0.0.1:11434"
@@ -25,6 +25,11 @@ class ForgeSettings(BaseSettings):
         extra="ignore",
         validate_default=True,
     )
+
+    @field_validator("forge_api_key", mode="before")
+    @classmethod
+    def empty_api_key_is_unset(cls, value: object) -> object:
+        return None if value == "" else value
 
     @field_validator("ollama_host")
     @classmethod
@@ -52,6 +57,12 @@ class ForgeSettings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_cors_origins(self) -> "ForgeSettings":
+        if self.forge_api_key is not None:
+            if len(self.forge_api_key.get_secret_value()) < 32:
+                raise ValueError("FORGE_API_KEY must contain at least 32 characters")
+        elif self.environment == "production":
+            raise ValueError("Production requires FORGE_API_KEY with at least 32 characters")
+
         origins = [origin.strip().rstrip("/") for origin in self.cors_origins.split(",")]
         if not origins or any(not origin for origin in origins):
             raise ValueError("CORS_ORIGINS must contain at least one valid origin")

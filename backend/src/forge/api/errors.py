@@ -7,6 +7,12 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from forge.providers.errors import (
+    ProviderError,
+    ProviderTimeoutError,
+    ProviderUnavailableError,
+)
+
 logger = logging.getLogger("forge.api")
 
 
@@ -28,9 +34,14 @@ class ErrorResponse(BaseModel):
 
 
 ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {
+    401: {"model": ErrorResponse, "description": "API key is missing or invalid"},
     404: {"model": ErrorResponse, "description": "Resource not found"},
     422: {"model": ErrorResponse, "description": "Request validation failed"},
     500: {"model": ErrorResponse, "description": "Unexpected server error"},
+    501: {"model": ErrorResponse, "description": "Provider is not implemented"},
+    502: {"model": ErrorResponse, "description": "Provider request failed"},
+    503: {"model": ErrorResponse, "description": "Service is unavailable"},
+    504: {"model": ErrorResponse, "description": "Provider request timed out"},
 }
 
 
@@ -61,10 +72,34 @@ async def handle_http_error(request: Request, exc: StarletteHTTPException) -> JS
     if exc.status_code == 404:
         code = "not_found"
         message = "Resource not found."
+    elif exc.status_code == 401:
+        code = "unauthorized"
+        message = "A valid API key is required."
+    elif exc.status_code == 501:
+        code = "provider_not_implemented"
+        message = "The configured model provider is not implemented."
+    elif exc.status_code == 503:
+        code = "service_unavailable"
+        message = "The generation service is not configured."
     else:
         code = "http_error"
         message = "Request could not be completed."
     return _error_response(_request_id(request), exc.status_code, code, message)
+
+
+async def handle_provider_error(request: Request, exc: ProviderError) -> JSONResponse:
+    if isinstance(exc, ProviderUnavailableError):
+        status_code = 503
+    elif isinstance(exc, ProviderTimeoutError):
+        status_code = 504
+    else:
+        status_code = 502
+    return _error_response(
+        _request_id(request),
+        status_code,
+        exc.code,
+        exc.public_message,
+    )
 
 
 async def handle_validation_error(

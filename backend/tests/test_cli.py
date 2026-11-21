@@ -1,7 +1,5 @@
-from typer.testing import CliRunner
-
 from forge.cli import app
-
+from typer.testing import CliRunner
 
 runner = CliRunner()
 
@@ -129,3 +127,71 @@ def test_search_command_reports_workspace_matches(tmp_path):
     assert result.exit_code == 0
     assert "main.py:1: forge is ready" in result.stdout
     assert "forge secret" not in result.stdout
+
+
+def test_run_command_shows_exact_proposal_and_requires_approval(tmp_path):
+    marker = tmp_path / "ran.txt"
+    code = f"from pathlib import Path; Path({str(marker)!r}).write_text('ran')"
+
+    result = runner.invoke(
+        app,
+        ["run", "--workspace", str(tmp_path), "--", "python", "-c", code],
+        input="y\n",
+    )
+
+    assert result.exit_code == 0
+    assert "Command permission required" in result.stdout
+    assert "Run this exact command?" in result.stdout
+    assert repr(code) in result.stdout.replace("\n", "")
+    assert marker.read_text(encoding="utf-8") == "ran"
+
+
+def test_run_command_defaults_to_denial_and_preserves_nonzero_exit(tmp_path):
+    marker = tmp_path / "must-not-exist.txt"
+    code = f"from pathlib import Path; Path({str(marker)!r}).write_text('ran')"
+    declined = runner.invoke(
+        app,
+        ["run", "--workspace", str(tmp_path), "--", "python", "-c", code],
+        input="n\n",
+    )
+
+    assert declined.exit_code == 1
+    assert "Command was not run" in declined.stdout
+    assert not marker.exists()
+
+    nonzero = runner.invoke(
+        app,
+        [
+            "run",
+            "--workspace",
+            str(tmp_path),
+            "--",
+            "python",
+            "-c",
+            "raise SystemExit(7)",
+        ],
+        input="y\n",
+    )
+
+    assert nonzero.exit_code == 7
+
+
+def test_run_command_reports_timeout_with_timeout_exit_code(tmp_path):
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "--workspace",
+            str(tmp_path),
+            "--timeout",
+            "0.1",
+            "--",
+            "python",
+            "-c",
+            "import time; time.sleep(10)",
+        ],
+        input="y\n",
+    )
+
+    assert result.exit_code == 124
+    assert "exceeded its timeout" in result.stdout

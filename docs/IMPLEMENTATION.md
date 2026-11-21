@@ -20,19 +20,19 @@ This document is the implementation checklist and handoff point for the project.
 - [x] Add bounded workspace discovery, text reads/search, and instruction loading.
 - [x] Add preview-first file writes with explicit approval, stale-content checks, atomic replacement, and hash-only audit logs.
 - [x] Expose workspace operations through `forge files`, `forge read`, `forge search`, and `forge write`.
+- [x] Add controlled terminal execution with an executable allowlist, exact-command approval, bounded output, timeout/cancellation cleanup, and redacted audit logs.
+- [x] Expose bounded Ollama generation through an API-key-protected API endpoint.
 
 ### Not implemented yet
 
 - [ ] Agent execution loop and interactive chat endpoint.
 - [ ] Gemini and OpenRouter inference adapters.
-- [ ] Expose provider generation through an API or user-facing one-shot command.
-- [ ] Controlled terminal execution with explicit permissions, timeouts, cancellation, and audit results.
 - [ ] Session persistence, resume, and change history.
 - [ ] Frontend chat/session workflow and settings management.
 - [ ] Frontend automated tests and end-to-end coverage.
 - [ ] Production deployment, authentication, rate limiting, and operational observability.
 
-The Ollama adapter can list installed models and generate non-streaming text for backend callers. `forge models` checks the local Ollama service. The current prompt CLI is still a placeholder, and provider generation is not exposed through the HTTP API. Gemini and OpenRouter adapters remain planned.
+The Ollama adapter can list installed models and generate non-streaming text. `POST /api/v1/generate` exposes bounded generation behind `FORGE_API_KEY`; the prompt CLI and agent loop remain placeholders. Gemini and OpenRouter adapters remain planned.
 
 ## Recommended implementation sequence
 
@@ -51,9 +51,10 @@ The Ollama adapter can list installed models and generate non-streaming text for
 - [x] Implement Ollama model discovery and non-streaming generation.
 - [x] Add timeouts, cancellation, bounded response handling, and safe error mapping.
 - [x] Keep provider credentials out of logs and browser payloads.
+- [x] Expose generation through `POST /api/v1/generate` with bearer-key authentication.
 - [ ] Implement Gemini and OpenRouter adapters.
 
-**Current result:** backend tests exercise Ollama model discovery and generation through the shared interface using a mock transport. Cloud adapters and user-facing generation endpoints remain follow-up work.
+**Current result:** backend tests exercise Ollama model discovery and generation through the shared interface using a mock transport. The generation endpoint accepts bounded provider-neutral requests, requires `FORGE_API_KEY`, and maps upstream failures to the shared sanitized error contract. Cloud adapters and a user-facing chat/agent workflow remain follow-up work.
 
 ### 3. Build the guarded agent core
 
@@ -61,10 +62,10 @@ The Ollama adapter can list installed models and generate non-streaming text for
 - [x] Implement bounded read/list/search tools.
 - [x] Add diff-previewed writes requiring explicit approval, with stale-content detection and auditable results.
 - [x] Connect CLI workspace operations to the shared workspace service.
-- [ ] Add subprocess execution controls, timeouts, cancellation, and audit results.
+- [x] Add subprocess execution controls, timeouts, cancellation, and audit results.
 - [ ] Connect authenticated API workflows to shared agent services.
 
-**Current result:** workspace reads/searches are bounded; file writes require an explicit approval callback and are previewed in the CLI. Sensitive paths, symlink write targets, traversal, oversized content, and stale proposals are rejected. The agent loop and terminal command execution remain unavailable.
+**Current result:** workspace reads/searches are bounded; file writes require an explicit approval callback and are previewed in the CLI. Sensitive paths, symlink write targets, traversal, oversized content, and stale proposals are rejected. `forge run` accepts a narrow executable allowlist and requires default-no confirmation of the resolved executable and exact arguments on every run. Commands are shell-free, workspace-cwd bounded, timeout-limited, output-capped, and inherit only an environment allowlist. The agent loop remains unavailable, and command approval is not an OS sandbox.
 
 **Done when:** a bounded task can run against a test workspace, with denied actions remaining non-mutating and all changes inspectable.
 
@@ -88,7 +89,7 @@ The Ollama adapter can list installed models and generate non-streaming text for
 ### 6. Prepare a production release
 
 - Choose deployment topology and supported database/storage options.
-- Add authentication/authorization before exposing workspace or execution endpoints.
+- Add user authentication/authorization before exposing workspace or execution endpoints; the generation API key is not user identity or a replacement for that work.
 - Configure production CORS, secret management, health/readiness probes, and structured logs.
 - Add CI for Python tests/build and frontend lint/build.
 - Document installation, upgrades, support policy, and security reporting.

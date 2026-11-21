@@ -11,11 +11,13 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from forge.api.errors import (
     handle_http_error,
+    handle_provider_error,
     handle_unexpected_error,
     handle_validation_error,
 )
-from forge.api.routes import health, providers
+from forge.api.routes import generation, health, providers
 from forge.config import ForgeSettings, get_settings
+from forge.providers.errors import ProviderError
 
 
 def create_app(settings: ForgeSettings | None = None) -> FastAPI:
@@ -36,8 +38,8 @@ def create_app(settings: ForgeSettings | None = None) -> FastAPI:
         CORSMiddleware,
         allow_origins=active_settings.allowed_origins,
         allow_credentials=False,
-        allow_methods=["GET"],
-        allow_headers=["Accept", "Content-Type"],
+        allow_methods=["GET", "POST"],
+        allow_headers=["Accept", "Authorization", "Content-Type"],
         expose_headers=["X-Request-ID"],
     )
     application.dependency_overrides[get_settings] = lambda: active_settings
@@ -65,8 +67,10 @@ def create_app(settings: ForgeSettings | None = None) -> FastAPI:
 
     application.add_exception_handler(StarletteHTTPException, handle_http_error)
     application.add_exception_handler(RequestValidationError, handle_validation_error)
+    application.add_exception_handler(ProviderError, handle_provider_error)
     application.add_exception_handler(Exception, handle_unexpected_error)
 
+    application.include_router(generation.router, prefix="/api/v1")
     application.include_router(health.router, prefix="/api/v1")
     application.include_router(providers.router, prefix="/api/v1")
     return application

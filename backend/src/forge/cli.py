@@ -8,8 +8,9 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from forge.context import Workspace, WorkspaceError, WriteProposal
 from forge.config import ForgeSettings, forge_directory, instructions_path
+from forge.context import Workspace, WorkspaceError, WriteProposal
+from forge.execution import CommandError, CommandProposal, CommandRunner
 from forge.providers import ProviderError, get_provider
 
 app = typer.Typer(
@@ -236,6 +237,65 @@ def search_files(
         console.print("[yellow]Search results truncated; narrow the pattern or increase the limit.[/]")
     elif not result.matches:
         console.print("[dim]No matches found.[/]")
+
+
+@app.command("run")
+def run_command(
+    command: list[str] = typer.Argument(
+        ..., help="Approved development command and arguments."
+    ),
+    workspace: Path = typer.Option(Path("."), "--workspace", help="Workspace root."),
+    cwd: str = typer.Option(".", "--cwd", help="Workspace-relative working directory."),
+    timeout: float = typer.Option(
+        30.0, min=0.1, max=300.0, help="Command timeout in seconds."
+    ),
+) -> None:
+    root = resolve_workspace(workspace)
+    runner = CommandRunner(root)
+
+    def request_approval(proposal: CommandProposal) -> bool:
+        console.print(
+            "[yellow]Command permission required[/]",
+        )
+        console.print(
+            Text(f"Executable: {proposal.executable_path}", overflow="fold")
+        )
+        console.print("Arguments:")
+        for index, argument in enumerate(proposal.argv):
+            console.print(Text(f"  [{index}] {argument!r}", overflow="fold"))
+        console.print(
+            Text(f"Working directory: {proposal.working_directory}", overflow="fold")
+        )
+        console.print(
+            f"Timeout: {proposal.timeout_seconds:g}s",
+        )
+        return typer.confirm("Run this exact command?", default=False)
+
+    try:
+        result = asyncio.run(
+            runner.run(
+                command,
+                approve=request_approval,
+                cwd=cwd,
+                timeout_seconds=timeout,
+            )
+        )
+    except CommandError as error:
+        console.print(f"[red]Command was not run:[/] {error}")
+        raise typer.Exit(code=1) from error
+
+    if result.stdout:
+        console.print(Text(result.stdout), end="")
+    if result.stderr:
+        console.print(Text(result.stderr, style="red"), end="")
+    if result.stdout_truncated or result.stderr_truncated:
+        console.print(
+            "[yellow]Command output was truncated at the configured limit.[/]"
+        )
+    if result.timed_out:
+        console.print("[red]Command exceeded its timeout and was terminated.[/]")
+        raise typer.Exit(code=124)
+    raise typer.Exit(code=result.exit_code if result.exit_code is not None else 1)
 
 
 @app.command()
