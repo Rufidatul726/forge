@@ -559,6 +559,376 @@ def test_settings_reject_invalid_cors_origins(cors_origins: str):
         ForgeSettings(_env_file=None, cors_origins=cors_origins)
 
 
+def test_oidc_settings_validation():
+    with pytest.raises(ValidationError, match="OIDC_ISSUER and OIDC_AUDIENCE"):
+        ForgeSettings(_env_file=None, auth_mode="oidc")
+
+    with pytest.raises(ValidationError, match="OIDC_ISSUER must be a valid HTTP"):
+        ForgeSettings(
+            _env_file=None,
+            auth_mode="oidc",
+            oidc_issuer="ftp://issuer.example",
+            oidc_audience="aud",
+        )
+
+    with pytest.raises(ValidationError, match="OIDC_ISSUER must use HTTPS in production"):
+        ForgeSettings(
+            _env_file=None,
+            environment="production",
+            auth_mode="oidc",
+            oidc_issuer="http://issuer.example",
+            oidc_audience="aud",
+        )
+
+    # In production, auth_mode="oidc" does not require forge_api_key
+    prod_oidc = ForgeSettings(
+        _env_file=None,
+        environment="production",
+        auth_mode="oidc",
+        oidc_issuer="https://issuer.example",
+        oidc_audience="aud",
+        cors_origins="https://forge.example.com",
+    )
+    assert prod_oidc.auth_mode == "oidc"
+    assert prod_oidc.forge_api_key is None
+
+    # In production, auth_mode="api_key" requires forge_api_key
+    with pytest.raises(ValidationError, match="Production requires FORGE_API_KEY"):
+        ForgeSettings(
+            _env_file=None,
+            environment="production",
+            auth_mode="api_key",
+            cors_origins="https://forge.example.com",
+        )
+
+
+def test_oidc_readiness_endpoint(tmp_path):
+    settings = ForgeSettings(
+        _env_file=None,
+        auth_mode="oidc",
+        oidc_issuer="https://issuer.example",
+        oidc_audience="forge-api",
+        agent_workspace_root=tmp_path,
+    )
+    res = request(create_app(settings), "GET", "/api/v1/ready")
+    assert res.status_code == 200
+    assert res.json() == {"status": "ready", "workspace": True, "api_key": True}
+
+    unconfigured = ForgeSettings(
+        _env_file=None,
+        auth_mode="oidc",
+        oidc_issuer="https://issuer.example",
+        oidc_audience="forge-api",
+        agent_workspace_root=None,
+    )
+    assert request(create_app(unconfigured), "GET", "/api/v1/ready").status_code == 503
+
+
+def test_oidc_access_token_scope_and_role_authorization(monkeypatch):
+    import jwt
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+
+    from forge.api.auth import AuthenticationError, authenticate_bearer
+
+    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    public_key = private_key.public_key()
+    jwk = jwt.algorithms.RSAAlgorithm.to_jwk(public_key, as_dict=True)
+    jwk["kid"] = "test-key"
+    jwks = jwt.PyJWKSet.from_dict({"keys": [jwk]})
+
+    async def fake_get_jwks(settings, **kwargs):
+        return jwks
+
+    monkeypatch.setattr("forge.api.auth._get_jwks", fake_get_jwks)
+    settings = ForgeSettings(
+        _env_file=None,
+        auth_mode="oidc",
+        oidc_issuer="https://issuer.example",
+        oidc_audience="forge-api",
+        oidc_required_scope="forge.read",
+        oidc_required_role="forge-user",
+    )
+    token = jwt.encode(
+        {
+            "iss": "https://issuer.example",
+            "aud": "forge-api",
+            "scope": "openid forge.read",
+            "realm_access": {"roles": ["forge-user"]},
+            "exp": 4102444800,
+        },
+        private_key,
+        algorithm="RS256",
+        headers={"kid": "test-key"},
+    )
+
+    asyncio.run(authenticate_bearer(token, settings))
+
+    insufficient = jwt.encode(
+        {
+            "iss": "https://issuer.example",
+            "aud": "forge-api",
+            "scope": "openid",
+            "realm_access": {"roles": ["forge-user"]},
+            "exp": 4102444800,
+        },
+        private_key,
+        algorithm="RS256",
+        headers={"kid": "test-key"},
+    )
+    with pytest.raises(AuthenticationError, match="insufficient_scope"):
+        asyncio.run(authenticate_bearer(insufficient, settings))
+
+
+def test_oidc_generate_endpoint_flow(monkeypatch):
+    import jwt
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    from forge.api.auth import clear_jwks_cache
+    from forge.providers.models import GenerationResult
+
+    clear_jwks_cache()
+    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    public_key = private_key.public_key()
+    jwk = jwt.algorithms.RSAAlgorithm.to_jwk(public_key, as_dict=True)
+    jwk["kid"] = "key-1"
+    jwks = jwt.PyJWKSet.from_dict({"keys": [jwk]})
+
+    async def fake_get_jwks(settings, *, force_refresh=False):
+        return jwks
+
+    monkeypatch.setattr("forge.api.auth._get_jwks", fake_get_jwks)
+
+    class FakeProvider:
+        async def generate(self, payload):
+            return GenerationResult(model=payload.model, content="Generated with OIDC", done=True)
+
+    monkeypatch.setattr("forge.api.routes.generation.get_provider", lambda model, settings: FakeProvider())
+
+    settings = ForgeSettings(
+        _env_file=None,
+        auth_mode="oidc",
+        oidc_issuer="https://issuer.example",
+        oidc_audience="forge-api",
+        oidc_required_scope="forge.read",
+        oidc_required_role="forge-admin",
+    )
+    app = create_app(settings)
+
+    # Missing Authorization header -> 401
+    res = request(app, "POST", "/api/v1/generate", json_body={"model": "ollama", "messages": [{"role": "user", "content": "hi"}]})
+    assert res.status_code == 401
+    assert res.json()["error"]["code"] == "unauthorized"
+
+    # Valid token with scope and role -> 200
+    valid_token = jwt.encode(
+        {
+            "iss": "https://issuer.example",
+            "aud": "forge-api",
+            "scope": "openid forge.read",
+            "roles": ["forge-admin"],
+            "exp": 4102444800,
+        },
+        private_key,
+        algorithm="RS256",
+        headers={"kid": "key-1"},
+    )
+    res = request(
+        app,
+        "POST",
+        "/api/v1/generate",
+        headers={"Authorization": f"Bearer {valid_token}"},
+        json_body={"model": "ollama", "messages": [{"role": "user", "content": "hi"}]},
+    )
+    assert res.status_code == 200
+    assert res.json()["content"] == "Generated with OIDC"
+
+    # Expired token -> 401
+    expired_token = jwt.encode(
+        {
+            "iss": "https://issuer.example",
+            "aud": "forge-api",
+            "scope": "openid forge.read",
+            "roles": ["forge-admin"],
+            "exp": 1000000000,
+        },
+        private_key,
+        algorithm="RS256",
+        headers={"kid": "key-1"},
+    )
+    res = request(
+        app,
+        "POST",
+        "/api/v1/generate",
+        headers={"Authorization": f"Bearer {expired_token}"},
+        json_body={"model": "ollama", "messages": [{"role": "user", "content": "hi"}]},
+    )
+    assert res.status_code == 401
+
+    # Missing required scope -> 403 Forbidden
+    no_scope = jwt.encode(
+        {
+            "iss": "https://issuer.example",
+            "aud": "forge-api",
+            "scope": "openid",
+            "roles": ["forge-admin"],
+            "exp": 4102444800,
+        },
+        private_key,
+        algorithm="RS256",
+        headers={"kid": "key-1"},
+    )
+    res = request(
+        app,
+        "POST",
+        "/api/v1/generate",
+        headers={"Authorization": f"Bearer {no_scope}"},
+        json_body={"model": "ollama", "messages": [{"role": "user", "content": "hi"}]},
+    )
+    assert res.status_code == 403
+    assert res.json()["error"]["code"] == "forbidden"
+
+    # Missing required role -> 403 Forbidden
+    no_role = jwt.encode(
+        {
+            "iss": "https://issuer.example",
+            "aud": "forge-api",
+            "scope": "openid forge.read",
+            "roles": ["forge-viewer"],
+            "exp": 4102444800,
+        },
+        private_key,
+        algorithm="RS256",
+        headers={"kid": "key-1"},
+    )
+    res = request(
+        app,
+        "POST",
+        "/api/v1/generate",
+        headers={"Authorization": f"Bearer {no_role}"},
+        json_body={"model": "ollama", "messages": [{"role": "user", "content": "hi"}]},
+    )
+    assert res.status_code == 403
+    assert res.json()["error"]["code"] == "forbidden"
+
+
+def test_api_key_or_oidc_mode(monkeypatch):
+    import jwt
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    from forge.providers.models import GenerationResult
+
+    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    public_key = private_key.public_key()
+    jwk = jwt.algorithms.RSAAlgorithm.to_jwk(public_key, as_dict=True)
+    jwk["kid"] = "key-1"
+    jwks = jwt.PyJWKSet.from_dict({"keys": [jwk]})
+
+    async def fake_get_jwks(settings, **kwargs):
+        return jwks
+
+    monkeypatch.setattr("forge.api.auth._get_jwks", fake_get_jwks)
+
+    class FakeProvider:
+        async def generate(self, payload):
+            return GenerationResult(model=payload.model, content="Dual auth works", done=True)
+
+    monkeypatch.setattr("forge.api.routes.generation.get_provider", lambda model, settings: FakeProvider())
+
+    api_key = "k" * 40
+    settings = ForgeSettings(
+        _env_file=None,
+        auth_mode="api_key_or_oidc",
+        forge_api_key=api_key,
+        oidc_issuer="https://issuer.example",
+        oidc_audience="forge-api",
+    )
+    app = create_app(settings)
+
+    # API key works
+    res1 = request(
+        app,
+        "POST",
+        "/api/v1/generate",
+        headers={"Authorization": f"Bearer {api_key}"},
+        json_body={"model": "ollama", "messages": [{"role": "user", "content": "hi"}]},
+    )
+    assert res1.status_code == 200
+    assert res1.json()["content"] == "Dual auth works"
+
+    # OIDC token works
+    token = jwt.encode(
+        {"iss": "https://issuer.example", "aud": "forge-api", "exp": 4102444800},
+        private_key,
+        algorithm="RS256",
+        headers={"kid": "key-1"},
+    )
+    res2 = request(
+        app,
+        "POST",
+        "/api/v1/generate",
+        headers={"Authorization": f"Bearer {token}"},
+        json_body={"model": "ollama", "messages": [{"role": "user", "content": "hi"}]},
+    )
+    assert res2.status_code == 200
+    assert res2.json()["content"] == "Dual auth works"
+
+    # Bad token fails
+    res3 = request(
+        app,
+        "POST",
+        "/api/v1/generate",
+        headers={"Authorization": "Bearer bad-token"},
+        json_body={"model": "ollama", "messages": [{"role": "user", "content": "hi"}]},
+    )
+    assert res3.status_code == 401
+
+
+def test_oidc_key_rotation_and_discovery_failure(monkeypatch):
+    import jwt
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    from forge.api.auth import AuthenticationError, _authenticate_oidc, clear_jwks_cache
+
+    clear_jwks_cache()
+    key1 = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    key2 = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+
+    jwk1 = jwt.algorithms.RSAAlgorithm.to_jwk(key1.public_key(), as_dict=True)
+    jwk1["kid"] = "kid-1"
+    jwk2 = jwt.algorithms.RSAAlgorithm.to_jwk(key2.public_key(), as_dict=True)
+    jwk2["kid"] = "kid-2"
+
+    current_keys = [jwk1]
+
+    async def fake_get_jwks(settings, *, force_refresh=False):
+        if force_refresh:
+            current_keys.append(jwk2)
+        return jwt.PyJWKSet.from_dict({"keys": current_keys})
+
+    monkeypatch.setattr("forge.api.auth._get_jwks", fake_get_jwks)
+
+    settings = ForgeSettings(
+        _env_file=None,
+        auth_mode="oidc",
+        oidc_issuer="https://issuer.example",
+        oidc_audience="forge-api",
+    )
+
+    token_rotated = jwt.encode(
+        {"iss": "https://issuer.example", "aud": "forge-api", "exp": 4102444800},
+        key2,
+        algorithm="RS256",
+        headers={"kid": "kid-2"},
+    )
+    asyncio.run(_authenticate_oidc(token_rotated, settings))
+
+    # Discovery failure
+    async def failing_get_jwks(settings, **kwargs):
+        raise AuthenticationError("oidc_discovery_failed")
+
+    monkeypatch.setattr("forge.api.auth._get_jwks", failing_get_jwks)
+    with pytest.raises(AuthenticationError, match="oidc_discovery_failed"):
+        asyncio.run(_authenticate_oidc(token_rotated, settings))
+
+
 def test_openapi_documents_error_contracts(app: FastAPI):
     schema = request(app, "GET", "/openapi.json").json()
     responses = schema["paths"]["/api/v1/providers"]["get"]["responses"]

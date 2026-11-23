@@ -35,7 +35,8 @@ This document is the implementation checklist and handoff point for the project.
 - [x] Persist project change history after approved workspace writes are connected to sessions.
 - [x] Frontend chat/session workflow, real-time streaming, and settings management.
 - [x] Frontend automated tests and end-to-end component coverage.
-- [ ] User identity authentication/authorization (OAuth/OIDC) and multi-instance distributed observability.
+- [ ] Multi-instance distributed observability.
+- [x] Optional OAuth/OIDC access-token authentication and scope/role authorization.
 
 Ollama, Gemini, and OpenRouter adapters support model listing, non-streaming generation, and streaming token generation. `POST /api/v1/generate` exposes bounded generation behind `FORGE_API_KEY`; `POST /api/v1/agent/tasks` and `POST /api/v1/agent/tasks/stream` provide read-only repository task workflows with session persistence. `forge -p` runs the guarded read-only service locally and persists turns. `forge -p "..." --agent` enables a bounded CLI tool loop for reads, approved writes, and approved allowlisted commands; HTTP task endpoints remain read-only.
 
@@ -96,13 +97,13 @@ Ollama, Gemini, and OpenRouter adapters support model listing, non-streaming gen
 ### 6. Prepare a production release
 
 - [x] Choose deployment topology (standalone local container or single-tenant container service with volume-mounted workspace).
-- Add user authentication/authorization before exposing workspace or execution endpoints; the generation API key is not user identity or a replacement for that work.
+- [x] Add user authentication/authorization (OAuth/OIDC access token verification, required scopes and roles) before exposing workspace or execution endpoints.
 - [x] Configure production CORS and add liveness/readiness probes.
 - [x] Add process-local rate limiting and production secret-management guidance.
 - [x] Add CI for Python tests/build and frontend tests/lint/build.
 - [x] Document container builds and release security boundaries.
 
-**Current result:** authenticated generation, task, streaming task, and session routes have a configurable process-local sliding-window limit. Production guidance recommends single-tenant containerized deployment with volume-mounted workspace root, deployment-managed secret injection, and a shared edge limiter for multi-instance deployments; multi-tenant user authentication and distributed operational observability remain follow-up work.
+**Current result:** authenticated generation, task, streaming task, and session routes support both server API-key and OIDC/OAuth access-token verification (via `AUTH_MODE=api_key`, `oidc`, or `api_key_or_oidc`) with scope and role enforcement, along with process-local sliding-window rate limiting. Production guidance recommends single-tenant containerized deployment with volume-mounted workspace root, deployment-managed secret injection, and a shared edge limiter for multi-instance deployments; distributed operational observability across multi-instance clusters remains follow-up work.
 
 **Done when:** a reproducible release pipeline and deployment instructions exist, with security controls enabled by default.
 

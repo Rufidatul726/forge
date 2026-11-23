@@ -12,7 +12,13 @@ _BACKEND_ROOT = Path(__file__).resolve().parents[2]
 
 class ForgeSettings(BaseSettings):
     environment: Literal["development", "test", "production"] = "development"
+    auth_mode: Literal["api_key", "oidc", "api_key_or_oidc"] = "api_key"
     forge_api_key: SecretStr | None = None
+    oidc_issuer: str | None = None
+    oidc_audience: str | None = None
+    oidc_jwks_url: str | None = None
+    oidc_required_scope: str | None = None
+    oidc_required_role: str | None = None
     gemini_api_key: SecretStr | None = None
     openrouter_api_key: SecretStr | None = None
     ollama_host: str = "http://127.0.0.1:11434"
@@ -70,10 +76,27 @@ class ForgeSettings(BaseSettings):
             raise ValueError("RATE_LIMIT_REQUESTS must be at least 1")
         if self.rate_limit_window_seconds < 1:
             raise ValueError("RATE_LIMIT_WINDOW_SECONDS must be at least 1")
+        if self.auth_mode in {"oidc", "api_key_or_oidc"}:
+            if not self.oidc_issuer or not self.oidc_audience:
+                raise ValueError("OIDC auth requires OIDC_ISSUER and OIDC_AUDIENCE")
+            for name, value in (
+                ("OIDC_ISSUER", self.oidc_issuer),
+                ("OIDC_JWKS_URL", self.oidc_jwks_url),
+            ):
+                if value is None:
+                    continue
+                parsed = urlsplit(value)
+                if (
+                    parsed.scheme not in {"http", "https"}
+                    or not parsed.hostname
+                ):
+                    raise ValueError(f"{name} must be a valid HTTP(S) URL")
+                if self.environment == "production" and parsed.scheme != "https":
+                    raise ValueError(f"{name} must use HTTPS in production")
         if self.forge_api_key is not None:
             if len(self.forge_api_key.get_secret_value()) < 32:
                 raise ValueError("FORGE_API_KEY must contain at least 32 characters")
-        elif self.environment == "production":
+        elif self.environment == "production" and self.auth_mode == "api_key":
             raise ValueError("Production requires FORGE_API_KEY with at least 32 characters")
 
         origins = [origin.strip().rstrip("/") for origin in self.cors_origins.split(",")]

@@ -67,8 +67,9 @@ Returns `{"status":"ok","service":"forge-api"}` when the API process responds.
 
 ### `GET /api/v1/ready`
 
-Returns readiness only when `FORGE_API_KEY` is configured and
-`AGENT_WORKSPACE_ROOT` resolves to an existing directory. Otherwise it returns
+Returns readiness only when authentication is configured for the active `AUTH_MODE`
+(`FORGE_API_KEY` for `api_key` mode, or `OIDC_ISSUER` and `OIDC_AUDIENCE` for `oidc` mode)
+and `AGENT_WORKSPACE_ROOT` resolves to an existing directory. Otherwise it returns
 503 with the common error envelope.
 
 ### `GET /api/v1/providers`
@@ -146,7 +147,9 @@ Errors use this shape:
 - `VITE_*` values are included in browser code and are public. Provider secrets belong only in the backend.
 - `OLLAMA_HOST` is validated as an HTTP(S) origin; embedded credentials, paths, and query parameters are rejected.
 - `CORS_ORIGINS` is a comma-separated allowlist. Production requires explicit HTTPS origins and rejects wildcard and localhost origins.
-- `FORGE_API_KEY` is a server-only bearer key for model generation; production requires a key of at least 32 characters.
+- `FORGE_API_KEY` is a server-only bearer key for model generation; production requires a key of at least 32 characters when `AUTH_MODE=api_key`.
+- `AUTH_MODE` selects authentication: `api_key` (default), `oidc`, or `api_key_or_oidc`.
+- When `AUTH_MODE` is `oidc` or `api_key_or_oidc`, `OIDC_ISSUER` and `OIDC_AUDIENCE` are required HTTP(S) URLs (enforced HTTPS in production). Optional `OIDC_JWKS_URL` overrides well-known discovery. `OIDC_REQUIRED_SCOPE` and `OIDC_REQUIRED_ROLE` enforce token scope and role claims (returning 403 Forbidden when absent).
 - `AGENT_WORKSPACE_ROOT` is a server-only, explicit root for the read-only agent task endpoint; callers cannot override it.
 - Session data is retained at `AGENT_WORKSPACE_ROOT/.forge/sessions.sqlite3`, which workspace tools exclude from readable context.
 - `ENVIRONMENT` selects `development`, `test`, or `production`; `LOG_LEVEL` selects the backend log level.

@@ -321,7 +321,7 @@ class Workspace:
         candidates_scanned = 0
 
         try:
-            candidates = self.root.glob(normalized_pattern)
+            candidates = sorted(self.root.glob(normalized_pattern))
             for candidate in candidates:
                 if candidates_scanned >= self.max_files_scanned:
                     truncated = True
@@ -374,7 +374,7 @@ class Workspace:
         candidates_scanned = 0
 
         try:
-            candidates = self.root.glob(normalized_pattern)
+            candidates = sorted(self.root.glob(normalized_pattern))
             for candidate in candidates:
                 if candidates_scanned >= self.max_files_scanned:
                     truncated = True

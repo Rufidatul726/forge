@@ -31,11 +31,18 @@ def readiness_check(settings: ForgeSettings = Depends(get_settings)) -> Readines
         settings.agent_workspace_root is not None
         and settings.agent_workspace_root.is_dir()
     )
-    api_key_ready = settings.forge_api_key is not None
-    if not workspace_ready or not api_key_ready:
+    if settings.auth_mode == "oidc":
+        auth_ready = bool(settings.oidc_issuer and settings.oidc_audience)
+    elif settings.auth_mode == "api_key_or_oidc":
+        auth_ready = settings.forge_api_key is not None or bool(
+            settings.oidc_issuer and settings.oidc_audience
+        )
+    else:
+        auth_ready = settings.forge_api_key is not None
+    if not workspace_ready or not auth_ready:
         raise HTTPException(status_code=503)
     return ReadinessResponse(
         status="ready",
         workspace=True,
-        api_key=True,
+        api_key=auth_ready,
     )

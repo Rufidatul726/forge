@@ -1,8 +1,7 @@
-import hmac
-
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
+from forge.api.auth import AuthenticationError, authenticate_bearer
 from forge.api.errors import ERROR_RESPONSES
 from forge.config import ForgeSettings, get_settings
 from forge.providers import get_provider
@@ -11,7 +10,7 @@ from forge.providers.models import GenerationRequest, GenerationResult
 router = APIRouter(tags=["generation"])
 api_key_scheme = HTTPBearer(
     scheme_name="ForgeBearer",
-    description="Server-side Forge API key.",
+    description="Bearer authentication via Forge API key or OIDC access token.",
     auto_error=False,
 )
 
@@ -21,17 +20,28 @@ async def require_generation_api_key(
     settings: ForgeSettings = Depends(get_settings),
 ) -> None:
     configured_key = settings.forge_api_key
-    if configured_key is None:
+    if settings.auth_mode == "api_key" and configured_key is None:
+        raise HTTPException(status_code=503)
+    if settings.auth_mode in {"oidc", "api_key_or_oidc"} and (
+        settings.oidc_issuer is None or settings.oidc_audience is None
+    ):
         raise HTTPException(status_code=503)
 
-    if (
-        credentials is None
-        or not hmac.compare_digest(
-            credentials.credentials.encode("utf-8"),
-            configured_key.get_secret_value().encode("utf-8"),
-        )
-    ):
+    if credentials is None:
         raise HTTPException(status_code=401)
+    try:
+        await authenticate_bearer(credentials.credentials, settings)
+    except AuthenticationError as exc:
+        code = str(exc)
+        if code in {"insufficient_scope", "insufficient_role"}:
+            raise HTTPException(
+                status_code=403,
+                detail=f"Token lacks required {code.replace('insufficient_', '')}",
+            ) from exc
+        raise HTTPException(status_code=401)
+
+
+require_authentication = require_generation_api_key
 
 
 @router.post(

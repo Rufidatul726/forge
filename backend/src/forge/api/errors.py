@@ -34,7 +34,8 @@ class ErrorResponse(BaseModel):
 
 
 ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {
-    401: {"model": ErrorResponse, "description": "API key is missing or invalid"},
+    401: {"model": ErrorResponse, "description": "Authentication token is missing or invalid"},
+    403: {"model": ErrorResponse, "description": "Insufficient permissions"},
     429: {"model": ErrorResponse, "description": "Rate limit exceeded"},
     404: {"model": ErrorResponse, "description": "Resource not found"},
     422: {"model": ErrorResponse, "description": "Request validation failed"},
@@ -75,7 +76,10 @@ async def handle_http_error(request: Request, exc: StarletteHTTPException) -> JS
         message = "Resource not found."
     elif exc.status_code == 401:
         code = "unauthorized"
-        message = "A valid API key is required."
+        message = exc.detail if isinstance(exc.detail, str) and exc.detail != "Unauthorized" else "A valid API key is required."
+    elif exc.status_code == 403:
+        code = "forbidden"
+        message = exc.detail if isinstance(exc.detail, str) and exc.detail != "Forbidden" else "Insufficient permissions."
     elif exc.status_code == 501:
         code = "provider_not_implemented"
         message = "The configured model provider is not implemented."

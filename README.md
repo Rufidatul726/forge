@@ -116,6 +116,12 @@ Ollama, Gemini, and OpenRouter support bounded text generation and real-time str
 
 Generation requires `Authorization: Bearer <FORGE_API_KEY>`. Set `FORGE_API_KEY` to a random value of at least 32 characters in `backend/.env.local`; production settings require it. The endpoint accepts at most 64 messages (up to 64,000 characters each) and limits generated output to 8,192 tokens. It does not expose workspace access or command execution.
 
+For deployment behind an identity provider, set `AUTH_MODE=oidc` and
+configure `OIDC_ISSUER` and `OIDC_AUDIENCE`. Forge verifies access tokens
+against the issuer discovery document or `OIDC_JWKS_URL`, and optionally
+requires `OIDC_REQUIRED_SCOPE` or `OIDC_REQUIRED_ROLE`. `api_key_or_oidc`
+keeps the existing API-key mode available while also accepting OIDC tokens.
+
 Example request body:
 
 ```json
