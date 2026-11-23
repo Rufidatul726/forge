@@ -32,6 +32,20 @@ from forge.intelligence.parsers.registry import get_parser_for_language
 from forge.intelligence.retrieval import ContextRetrievalEngine
 from forge.intelligence.scanner import RepoScanner, detect_language, is_test_file
 from forge.intelligence.store import IndexStore
+from forge.research import (
+    FetcherError,
+    ResearchQuery,
+    ResearchService,
+)
+from forge.research.providers.base import SearchError
+
+from typer.core import TyperGroup
+
+class ResearchTyperGroup(TyperGroup):
+    def parse_args(self, ctx, args):
+        if args and args[0] not in self.commands and not args[0].startswith("-") and args[0] not in {"--help", "-h"}:
+            args = ["query"] + args
+        return super().parse_args(ctx, args)
 
 app = typer.Typer(
     name="forge",
@@ -39,7 +53,9 @@ app = typer.Typer(
     no_args_is_help=False,
 )
 sessions_app = typer.Typer(help="Manage persistent workspace sessions.")
+research_app = typer.Typer(cls=ResearchTyperGroup, help="Web research, documentation retrieval, and evidence grounding.")
 app.add_typer(sessions_app, name="sessions")
+app.add_typer(research_app, name="research")
 console = Console()
 
 
@@ -879,3 +895,213 @@ def rollback_command(
         console.print(f"[red]Conflicting external changes detected for {len(res.conflicts)} file(s) (not overwritten):[/] {', '.join(res.conflicts)}")
     if not res.restored and not res.conflicts:
         console.print(f"[yellow]No files needed restoration for checkpoint {target_id}.[/]")
+
+
+@research_app.command("query", hidden=True)
+def research_query_command(
+    query: str = typer.Argument(..., help="Technical search query for web and documentation research."),
+    domain: list[str] | None = typer.Option(None, "--domain", "-d", help="Restrict research to specific domain(s)."),
+    limit: int = typer.Option(5, "--limit", "-l", help="Maximum number of sources to retrieve."),
+    recency: str | None = typer.Option(None, "--recency", help="Filter by recency (e.g. day, week, month, year)."),
+    package: str | None = typer.Option(None, "--package", help="Optional package/framework name."),
+    version: str | None = typer.Option(None, "--version", help="Optional version filter."),
+    workspace: Path = typer.Option(Path("."), "-w", "--workspace", help="Path to workspace root."),
+) -> None:
+    if not query or not query.strip():
+        console.print("[yellow]Please provide a research query or run 'forge research --help'.[/]")
+        raise typer.Exit(code=1)
+
+    root = resolve_workspace(workspace)
+    service = ResearchService(root)
+    research_query = ResearchQuery(
+        query=query.strip(),
+        limit=limit,
+        domain_restrictions=domain or [],
+        recency=recency,
+        package=package,
+        version=version,
+    )
+
+    console.print(
+        Panel(
+            f"[bold]Query:[/] {query}\n"
+            f"[bold]Workspace:[/] {root}\n"
+            f"[bold]Limit:[/] {limit}"
+            + (f" | [bold]Domain(s):[/] {', '.join(domain)}" if domain else "")
+            + (f" | [bold]Version:[/] {version}" if version else ""),
+            title="Forge Research",
+            border_style="cyan",
+        )
+    )
+
+    try:
+        report = asyncio.run(service.research(research_query))
+    except (SearchError, FetcherError, ValueError) as exc:
+        msg = getattr(exc, "public_message", str(exc))
+        console.print(f"[red]Research failed:[/] {msg}")
+        raise typer.Exit(code=1) from exc
+
+    # Sources table
+    table = Table(title="Retrieved & Ranked Sources")
+    table.add_column("ID", style="bold cyan")
+    table.add_column("Title", style="bold")
+    table.add_column("Domain", style="green")
+    table.add_column("Score", style="yellow")
+    table.add_column("Status", style="dim")
+
+    for src in report.sources:
+        status_style = "green" if src.retrieval_status == "success" else "red"
+        table.add_row(
+            src.source_id,
+            src.page_title[:45],
+            src.domain,
+            f"{src.relevance_score:.1f}",
+            f"[{status_style}]{src.retrieval_status}[/{status_style}]",
+        )
+    console.print(table)
+
+    if report.verified_facts:
+        facts_panel = Panel(
+            "\n".join(f"• {f}" for f in report.verified_facts),
+            title="Verified Evidence Facts",
+            border_style="green",
+        )
+        console.print(facts_panel)
+
+    if report.conflicting_sources:
+        conflicts_text = "\n".join(f"• {c.get('issue')}" for c in report.conflicting_sources)
+        console.print(Panel(conflicts_text, title="Identified Conflicts", border_style="yellow"))
+
+    console.print(f"[dim]Research ID: {report.research_id}[/]")
+
+
+@research_app.command("fetch")
+def research_fetch_command(
+    url: str = typer.Argument(..., help="URL of documentation page to retrieve safely."),
+    workspace: Path = typer.Option(Path("."), "-w", "--workspace", help="Path to workspace root."),
+) -> None:
+    root = resolve_workspace(workspace)
+    service = ResearchService(root)
+
+    console.print(f"[dim]Safely retrieving:[/] {url}")
+    try:
+        doc = asyncio.run(service.fetch_url(url))
+    except (FetcherError, ValueError) as exc:
+        msg = getattr(exc, "public_message", str(exc))
+        console.print(f"[red]Fetch failed:[/] {msg}")
+        raise typer.Exit(code=1) from exc
+
+    table = Table(title="Retrieved Document Metadata")
+    table.add_column("Property", style="bold cyan")
+    table.add_column("Value", style="green")
+    table.add_row("Title", doc.title)
+    table.add_row("Canonical URL", doc.canonical_url)
+    table.add_row("Domain", doc.domain)
+    table.add_row("Content-Type", doc.content_type)
+    table.add_row("Content Hash", doc.content_hash[:16] + "..." if doc.content_hash else "-")
+    table.add_row("Status", doc.status)
+    table.add_row("Headings Count", str(len(doc.headings)))
+    table.add_row("Code Blocks Count", str(len(doc.code_blocks)))
+    console.print(table)
+
+    if doc.extracted_text:
+        preview = doc.extracted_text[:600]
+        console.print(Panel(preview, title="Extracted Content Preview", border_style="dim"))
+
+
+@research_app.command("show")
+def research_show_command(
+    research_id: str = typer.Argument(..., help="Research report ID to inspect."),
+    workspace: Path = typer.Option(Path("."), "-w", "--workspace", help="Path to workspace root."),
+) -> None:
+    root = resolve_workspace(workspace)
+    service = ResearchService(root)
+    report = service.get_report(research_id)
+    if report is None:
+        console.print(f"[red]Research report not found:[/] {research_id}")
+        raise typer.Exit(code=1)
+
+    console.print(
+        Panel(
+            f"[bold]Query:[/] {report.query.query}\n"
+            f"[bold]Status:[/] {report.status.value}\n"
+            f"[bold]Created:[/] {report.created_at}\n"
+            f"[bold]Summary:[/] {report.summary}",
+            title=f"Research Report: {report.research_id}",
+            border_style="cyan",
+        )
+    )
+
+    if report.citations:
+        table = Table(title="Citations")
+        table.add_column("Citation ID", style="cyan")
+        table.add_column("Source", style="green")
+        table.add_column("Section", style="dim")
+        table.add_column("Excerpt", style="white")
+        for cit in report.citations:
+            table.add_row(
+                cit.citation_id,
+                f"{cit.source_title} ({cit.source_id})",
+                cit.section_heading or "-",
+                cit.relevant_excerpt[:100] + "...",
+            )
+        console.print(table)
+
+
+@research_app.command("sources")
+def research_sources_command(
+    research_id: str = typer.Argument(..., help="Research report ID to list sources for."),
+    workspace: Path = typer.Option(Path("."), "-w", "--workspace", help="Path to workspace root."),
+) -> None:
+    root = resolve_workspace(workspace)
+    service = ResearchService(root)
+    report = service.get_report(research_id)
+    if report is None:
+        console.print(f"[red]Research report not found:[/] {research_id}")
+        raise typer.Exit(code=1)
+
+    table = Table(title=f"Sources for Research: {research_id}")
+    table.add_column("ID", style="bold cyan")
+    table.add_column("Title", style="bold")
+    table.add_column("URL", style="green")
+    table.add_column("Type", style="dim")
+    table.add_column("Score", style="yellow")
+    for src in report.sources:
+        table.add_row(
+            src.source_id,
+            src.page_title[:40],
+            src.canonical_url,
+            src.source_type,
+            f"{src.relevance_score:.1f}",
+        )
+    console.print(table)
+
+
+@research_app.command("cache")
+def research_cache_command(
+    status: bool = typer.Option(False, "--status", help="Show research cache status."),
+    clear: bool = typer.Option(False, "--clear", help="Clear all entries from research cache."),
+    workspace: Path = typer.Option(Path("."), "-w", "--workspace", help="Path to workspace root."),
+) -> None:
+    root = resolve_workspace(workspace)
+    service = ResearchService(root)
+
+    if clear:
+        deleted = service.cache.clear()
+        console.print(f"[green]Cleared {deleted} document(s) from research cache.[/]")
+        return
+
+    # Default show status
+    st = service.cache.status()
+    table = Table(title="Research Cache Status")
+    table.add_column("Metric", style="bold cyan")
+    table.add_column("Value", style="green")
+    table.add_row("Total Cached Documents", str(st["total_documents"]))
+    table.add_row("Total Cache Size", f"{st['total_size_mb']} MB")
+    table.add_row("Max Documents Limit", str(st["max_documents_limit"]))
+    table.add_row("Max Cache Size Limit", f"{st['max_bytes_limit_mb']} MB")
+    table.add_row("Cache TTL", f"{st['ttl_days']} days")
+    table.add_row("Expired Documents", str(st["expired_documents"]))
+    table.add_row("Oldest Entry", str(st["oldest_entry"] or "-"))
+    table.add_row("Newest Entry", str(st["newest_entry"] or "-"))
+    console.print(table)

@@ -109,3 +109,90 @@ class ListFilesArgs(BaseModel):
         le=1000,
         description="Maximum number of files to return.",
     )
+
+
+class WebSearchArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    query: str = Field(
+        min_length=1,
+        max_length=1000,
+        description="Search query to find external technical documentation and web sources.",
+    )
+    limit: int = Field(
+        default=5,
+        gt=0,
+        le=20,
+        description="Maximum number of search results to retrieve.",
+    )
+    domains: list[str] = Field(
+        default_factory=list,
+        max_length=10,
+        description="Optional list of domain restrictions (e.g. docs.pydantic.dev).",
+    )
+    recency: str | None = Field(
+        default=None,
+        description="Optional recency filter (day, week, month, year).",
+    )
+
+
+class FetchUrlArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    url: str = Field(
+        min_length=1,
+        max_length=2048,
+        description="HTTP or HTTPS URL of documentation page to safely retrieve.",
+    )
+    max_chars: int = Field(
+        default=12000,
+        gt=0,
+        le=50000,
+        description="Maximum number of characters of extracted content to return.",
+    )
+
+
+class SearchDocumentationArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    query: str = Field(
+        min_length=1,
+        max_length=1000,
+        description="Documentation topic, API, function, or framework feature to search for.",
+    )
+    package: str | None = Field(
+        default=None,
+        max_length=255,
+        description="Optional package or library name (e.g. fastapi, pydantic).",
+    )
+    version: str | None = Field(
+        default=None,
+        max_length=64,
+        description="Optional package version to target (e.g. 2.0).",
+    )
+    domains: list[str] = Field(
+        default_factory=list,
+        max_length=10,
+        description="Optional list of domain restrictions.",
+    )
+    limit: int = Field(
+        default=5,
+        gt=0,
+        le=20,
+        description="Maximum number of documentation sources to retrieve.",
+    )
+
+
+class InspectResearchArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    research_id: str = Field(
+        min_length=1,
+        max_length=64,
+        description="Unique identifier of previously generated research report.",
+    )
+    source_id: str | None = Field(
+        default=None,
+        max_length=64,
+        description="Optional source ID filter (e.g. src_1).",
+    )

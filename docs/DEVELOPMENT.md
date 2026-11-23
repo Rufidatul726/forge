@@ -36,6 +36,13 @@ Backend environment variables:
 | `METRICS_ENABLED` | `true` | Whether Prometheus metrics scraping is enabled at `GET /api/v1/metrics` |
 | `RATE_LIMIT_REQUESTS` | `60` | Maximum requests from one direct client in each rate-limit window for authenticated generation, task, and session routes |
 | `RATE_LIMIT_WINDOW_SECONDS` | `60` | Positive length of the process-local rate-limit window in seconds |
+| `BRAVE_SEARCH_API_KEY` | empty | API key for the official Brave Search REST adapter (free tier 2,000 queries/month) |
+| `TAVILY_API_KEY` | empty | API key for the Tavily Search API adapter (free tier 1,000 queries/month) |
+| `SEARXNG_URL` | empty | Base URL of a self-hosted or public SearXNG instance (no API key required) |
+| `SEARCH_PROVIDER` | `auto` | Search provider choice: `auto`, `brave`, `tavily`, `searxng`, or `mock` |
+| `RESEARCH_CACHE_TTL_DAYS` | `7` | Cache expiration time in days for retrieved documentation |
+| `RESEARCH_MAX_CACHE_DOCUMENTS` | `500` | Maximum number of documents retained in `.forge/research.sqlite3` |
+| `RESEARCH_MAX_CACHE_BYTES` | `52428800` | Maximum byte capacity (default 50 MiB) for the research cache before eviction |
 
 Frontend environment variables:
 
@@ -106,6 +113,15 @@ Workspace file operations reject absolute paths, parent traversal, escaped symli
 `forge map` prints a deterministic repository map with directory hierarchy, summaries, and detected project boundaries.
 
 `forge references <symbol>` lists references to a symbol across the repository, distinguishing resolved symbol targets from unresolved/textual references.
+
+`forge research` provides web research, documentation retrieval, and evidence grounding:
+- `forge research "query"`: Submits a query to the configured search provider, retrieves and extracts documentation pages, deterministically ranks them, and displays verified facts, excerpts, and citations.
+- `forge research "query" --domain <domain>`: Restricts search to specified documentation domain(s).
+- `forge research fetch <url>`: Safely fetches and parses a documentation URL using bounded HTTP retrieval with SSRF and DNS rebinding protections.
+- `forge research show <id>`: Displays full details of a persisted research report.
+- `forge research sources <id>`: Lists ranked sources and explainable scoring signals for a research report.
+- `forge research cache --status`: Reports persistent document cache metrics, document counts, and capacity.
+- `forge research cache --clear`: Prunes all cached documentation entries.
 
 `forge explain <path>` explains a file by listing its defined symbols, imports, incoming caller references, and associated test files.
 

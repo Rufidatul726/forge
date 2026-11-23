@@ -85,12 +85,14 @@ class AgentService:
         *,
         registry: ToolRegistry | None = None,
         command_runner: CommandRunner | None = None,
+        research_service: Any = None,
     ) -> None:
         self._workspace = Workspace(workspace_root)
         self._provider = provider
         self._command_runner = command_runner or CommandRunner(workspace_root)
         self._registry = registry or create_default_registry()
         self._checkpoint_manager = CheckpointManager(workspace_root)
+        self._research_service = research_service
 
     @property
     def checkpoint_manager(self) -> CheckpointManager:
@@ -122,6 +124,7 @@ class AgentService:
             approve_command=approve_command,
             checkpoint_manager=self._checkpoint_manager,
             task_id=task_id,
+            research_service=self._research_service,
         )
         dispatcher = ToolDispatcher(self._registry, context_obj)
 
@@ -133,8 +136,9 @@ class AgentService:
             role="system",
             content=(
                 "You are Forge, an autonomous repository assistant. Use native tools only when "
-                "needed to inspect the workspace, search text, write files, or run allowlisted commands. "
-                "Never claim a mutation or command succeeded unless its tool result confirms it."
+                "needed to inspect the workspace, search text, write files, run allowlisted commands, "
+                "or perform external documentation research. Never claim a mutation or command succeeded unless its tool result confirms it. "
+                "Ground technical claims in retrieved evidence and cite sources."
                 f"{policy_note}\n\n"
                 f"{context}"
             ),

@@ -49,6 +49,19 @@ This document is the implementation checklist and handoff point for the project.
 - [x] CLI commands: `forge index` (with `--status` and `--force`), `forge map`, `forge references`, `forge explain`, and `forge context`.
 - [x] Agent context integration feeding grounded repository intelligence into autonomous and read-only execution loops.
 - [x] Hardened checkpoint payloads with versioning and canonical SHA-256 integrity checksum verification.
+- [x] Web research subsystem (`backend/src/forge/research/`) with provider-neutral models, queries, results, and reports (Forge M4).
+- [x] Bounded HTTP retrieval (`SafeDocumentFetcher`) with SSRF defense (private, loopback, link-local, multicast, and reserved IPv4/IPv6 blocking), IP pinning to prevent DNS rebinding, redirect hop validation, size limits (2 MiB), and content type restrictions.
+- [x] Technical content extraction (`HTMLDocumentationParser`, Markdown, JSON, plain text) excluding page chrome/ads/cookie notices and preserving code blocks, headings hierarchy, tables, and links.
+- [x] Provider-neutral search abstraction (`SearchProvider`) with Brave Search, Tavily, SearXNG, Mock, and Unconfigured adapters.
+- [x] SQLite research persistence (`research.sqlite3`) with schema migrations and transactional report recording.
+- [x] Persistent document cache (`ResearchCache`) with TTL expiration, bounded document count, and size eviction.
+- [x] Deterministic explainable ranking and deduplication across canonical URLs, normalized query parameters, and SHA-256 content hashes.
+- [x] Evidence grounding and verifiable citation validation linking claims to exact excerpt offsets and section headings.
+- [x] Research prompt-injection security isolating untrusted external content within `<untrusted_evidence>` boundaries and neutralizing instruction overrides.
+- [x] Agent tool integration (`web_search`, `fetch_url`, `search_documentation`, `inspect_research`) registered as read-only tools operating across plan, normal, and autonomous execution policies.
+- [x] Typer CLI research commands: `forge research <query>`, `forge research fetch <url>`, `forge research show <id>`, `forge research sources <id>`, and `forge research cache`.
+- [x] Authenticated read-only HTTP API endpoints (`POST /api/v1/research`, `GET /api/v1/research/{id}`, `GET /api/v1/research/{id}/sources`).
+- [x] Complete automated test suite with 100% mocked external network interactions and green M1-M3 regression suite.
 
 ### Not implemented yet
 

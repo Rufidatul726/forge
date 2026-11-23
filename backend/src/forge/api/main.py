@@ -21,7 +21,7 @@ from forge.api.observability import (
     get_metrics_registry,
     sanitize_header_id,
 )
-from forge.api.routes import agent, generation, health, metrics, providers, sessions
+from forge.api.routes import agent, generation, health, metrics, providers, research, sessions
 from forge.config import ForgeSettings, get_settings
 from forge.api.rate_limit import SlidingWindowRateLimiter
 from forge.providers.errors import ProviderError
@@ -97,7 +97,8 @@ def create_app(settings: ForgeSettings | None = None) -> FastAPI:
                 "/api/v1/agent/tasks",
                 "/api/v1/agent/tasks/stream",
                 "/api/v1/sessions",
-            } or request.url.path.startswith("/api/v1/sessions/")
+                "/api/v1/research",
+            } or request.url.path.startswith("/api/v1/sessions/") or request.url.path.startswith("/api/v1/research/")
             if request.method != "OPTIONS" and protected_path:
                 client_id = request.client.host if request.client else "unknown"
                 allowed, retry_after = rate_limiter.check(client_id)
@@ -202,6 +203,7 @@ def create_app(settings: ForgeSettings | None = None) -> FastAPI:
     application.include_router(health.router, prefix="/api/v1")
     application.include_router(metrics.router, prefix="/api/v1")
     application.include_router(providers.router, prefix="/api/v1")
+    application.include_router(research.router, prefix="/api/v1")
     return application
 
 

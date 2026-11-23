@@ -14,6 +14,8 @@ forge/
 │   │   ├── providers/        # Provider interface and model adapters
 │   │   ├── context/          # Workspace discovery, search, and guarded writes
 │   │   ├── execution/        # Explicitly approved development commands
+│   │   ├── intelligence/     # Repository scanning, AST parsing, symbol indexing
+│   │   ├── research/         # Web research, safe URL retrieval, doc extraction, citations
 │   │   ├── cli.py            # Typer terminal interface
 │   │   └── config.py         # Environment-backed settings
 │   ├── tests/
@@ -129,6 +131,32 @@ Add `--agent` to enable a bounded CLI tool loop with native structured tool call
 
 All tool calls are dispatched through `ToolRegistry` and strictly validated against parameter schemas (unexpected fields are forbidden). HTTP agent endpoints remain strictly read-only. Repository context selection allocates token budgets across nested `FORGE.md`/`AGENTS.md` instructions, file inventories, and requested context files while honoring `.gitignore` and sensitive file exclusions.
 
+### Web research and evidence-grounded coding (Forge M4)
+
+Forge provides a provider-neutral research subsystem for technical documentation retrieval, secure bounded fetching, explainable ranking, and evidence grounding:
+
+```powershell
+# Search technical topics across the web or specific documentation domains
+uv run --project backend forge research "FastAPI dependency injection best practices"
+uv run --project backend forge research "Pydantic v2 migration" --domain docs.pydantic.dev
+uv run --project backend forge research "React Router loaders" --limit 5
+
+# Safely retrieve and extract structured content from a documentation page
+uv run --project backend forge research fetch https://fastapi.tiangolo.com/tutorial/security/
+
+# Inspect stored research reports, evidence excerpts, and citations
+uv run --project backend forge research show <research-id>
+uv run --project backend forge research sources <research-id>
+
+# Manage the persistent document cache
+uv run --project backend forge research cache --status
+uv run --project backend forge research cache --clear
+```
+
+- **Security & SSRF defense**: `SafeDocumentFetcher` enforces strict network boundaries: HTTP/HTTPS only, rejects private/loopback/link-local/multicast/reserved IPv4 & IPv6 destinations, eliminates DNS rebinding by pinning pre-validated IPs, limits redirects, validates content types, and bounds response streams (2 MiB limit).
+- **Prompt-injection isolation**: External retrieved content is treated as untrusted data. External instructions cannot alter execution policies, system rules, or authorize writes/commands. Citations are strictly validated against verified source text.
+- **Agent tools**: `web_search`, `fetch_url`, `search_documentation`, and `inspect_research` are available in `ToolRegistry` as read-only tools across normal, plan, and autonomous policies.
+
 ## API endpoints
 
 | Method | Path | Purpose |
@@ -136,6 +164,9 @@ All tool calls are dispatched through `ToolRegistry` and strictly validated agai
 | `GET` | `/api/v1/health` | Check whether the API is responding |
 | `GET` | `/api/v1/ready` | Check API key and workspace readiness |
 | `GET` | `/api/v1/providers` | Read the default model and provider configuration status |
+| `POST` | `/api/v1/research` | Submit a research query and generate an evidence-grounded report |
+| `GET` | `/api/v1/research/{id}` | Inspect a previously generated research report by ID |
+| `GET` | `/api/v1/research/{id}/sources` | Retrieve ranked sources and citations for a research report |
 | `POST` | `/api/v1/generate` | Generate a bounded response using the configured provider |
 | `POST` | `/api/v1/agent/tasks` | Run a read-only repository task in the configured workspace |
 | `POST` | `/api/v1/agent/tasks/stream` | Stream a read-only repository task via Server-Sent Events |

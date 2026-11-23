@@ -6,17 +6,28 @@ from pydantic import BaseModel
 
 from forge.agent.policy import ExecutionPolicyConfig
 from forge.agent.schemas import (
+    FetchUrlArgs,
+    InspectResearchArgs,
     ListFilesArgs,
     ReadFileArgs,
     RunCommandArgs,
+    SearchDocumentationArgs,
     SearchSymbolsArgs,
     SearchTextArgs,
+    WebSearchArgs,
     WriteFileArgs,
 )
 from forge.context import CheckpointManager, Workspace, WorkspaceError
 from forge.context.workspace import WriteProposal
 from forge.execution import CommandError, CommandProposal, CommandRunner
 from forge.providers.models import ToolDefinition, ToolResult
+from forge.research import (
+    FetcherError,
+    ResearchQuery,
+    ResearchService,
+    format_evidence_for_prompt,
+)
+from forge.research.providers.base import SearchError
 
 
 @dataclass
@@ -28,6 +39,7 @@ class ToolExecutionContext:
     approve_command: Callable[[CommandProposal], bool]
     checkpoint_manager: CheckpointManager | None = None
     task_id: str | None = None
+    research_service: Any = None
 
 
 @dataclass(frozen=True)
@@ -204,6 +216,116 @@ async def _handle_run_command(args: RunCommandArgs, ctx: ToolExecutionContext) -
             name="run_command",
             ok=False,
             content=getattr(error, "public_message", str(error)),
+        )
+
+
+async def _handle_web_search(args: WebSearchArgs, ctx: ToolExecutionContext) -> ToolResult:
+    try:
+        service = ctx.research_service or ResearchService(ctx.workspace.root)
+        query = ResearchQuery(
+            query=args.query,
+            limit=args.limit,
+            domain_restrictions=args.domains,
+            recency=args.recency,
+        )
+        report = await service.research(query)
+        evidence_text = format_evidence_for_prompt(report.sources, report.evidence_excerpts)
+        summary = (
+            f"Research report ID: {report.research_id}\n"
+            f"Query: {report.query.query}\n"
+            f"Sources retrieved: {len(report.sources)}\n\n"
+            f"{evidence_text}"
+        )
+        return ToolResult(name="web_search", ok=True, content=summary[:64_000])
+    except (SearchError, FetcherError, ValueError) as error:
+        return ToolResult(
+            name="web_search",
+            ok=False,
+            content=getattr(error, "public_message", str(error)),
+        )
+
+
+async def _handle_fetch_url(args: FetchUrlArgs, ctx: ToolExecutionContext) -> ToolResult:
+    try:
+        service = ctx.research_service or ResearchService(ctx.workspace.root)
+        doc = await service.fetch_url(args.url)
+        content_preview = doc.extracted_text[:args.max_chars]
+        formatted = (
+            f"Title: {doc.title}\n"
+            f"Canonical URL: {doc.canonical_url}\n"
+            f"Domain: {doc.domain}\n"
+            f"Content Type: {doc.content_type}\n"
+            f"Status: {doc.status}\n\n"
+            f"<untrusted_retrieved_content url=\"{doc.canonical_url}\">\n"
+            f"{content_preview}\n"
+            f"</untrusted_retrieved_content>"
+        )
+        return ToolResult(name="fetch_url", ok=True, content=formatted[:64_000])
+    except (FetcherError, ValueError) as error:
+        return ToolResult(
+            name="fetch_url",
+            ok=False,
+            content=getattr(error, "public_message", str(error)),
+        )
+
+
+async def _handle_search_documentation(args: SearchDocumentationArgs, ctx: ToolExecutionContext) -> ToolResult:
+    try:
+        service = ctx.research_service or ResearchService(ctx.workspace.root)
+        q_text = args.query
+        if args.package and args.package.lower() not in q_text.lower():
+            q_text = f"{args.package} {q_text}"
+        if args.version and args.version.lower() not in q_text.lower():
+            q_text = f"{q_text} {args.version}"
+
+        query = ResearchQuery(
+            query=q_text,
+            limit=args.limit,
+            domain_restrictions=args.domains,
+            package=args.package,
+            version=args.version,
+        )
+        report = await service.research(query)
+        evidence_text = format_evidence_for_prompt(report.sources, report.evidence_excerpts)
+        summary = (
+            f"Documentation research report ID: {report.research_id}\n"
+            f"Query: {q_text}\n"
+            f"Sources retrieved: {len(report.sources)}\n\n"
+            f"{evidence_text}"
+        )
+        return ToolResult(name="search_documentation", ok=True, content=summary[:64_000])
+    except (SearchError, FetcherError, ValueError) as error:
+        return ToolResult(
+            name="search_documentation",
+            ok=False,
+            content=getattr(error, "public_message", str(error)),
+        )
+
+
+async def _handle_inspect_research(args: InspectResearchArgs, ctx: ToolExecutionContext) -> ToolResult:
+    try:
+        service = ctx.research_service or ResearchService(ctx.workspace.root)
+        report = service.get_report(args.research_id)
+        if report is None:
+            return ToolResult(
+                name="inspect_research",
+                ok=False,
+                content=f"Research report '{args.research_id}' not found.",
+            )
+
+        sources = report.sources
+        excerpts = report.evidence_excerpts
+        if args.source_id:
+            sources = [s for s in sources if s.source_id == args.source_id]
+            excerpts = [e for e in excerpts if e.source_id == args.source_id]
+
+        evidence_text = format_evidence_for_prompt(sources, excerpts)
+        return ToolResult(name="inspect_research", ok=True, content=evidence_text[:64_000])
+    except Exception as error:
+        return ToolResult(
+            name="inspect_research",
+            ok=False,
+            content=str(error),
         )
 
 
@@ -402,6 +524,147 @@ def create_default_registry() -> ToolRegistry:
                 },
             ),
             handler=_handle_run_command,
+        )
+    )
+
+    registry.register(
+        RegisteredTool(
+            name="web_search",
+            description="Search the web for external documentation and technical information.",
+            read_only=True,
+            args_schema=WebSearchArgs,
+            definition=ToolDefinition(
+                name="web_search",
+                description="Search the web for external documentation and technical information.",
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "Search query to find external technical documentation.",
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "Maximum number of search results to retrieve.",
+                            "default": 5,
+                        },
+                        "domains": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Optional list of domain restrictions.",
+                        },
+                        "recency": {
+                            "type": "string",
+                            "description": "Optional recency filter (day, week, month, year).",
+                        },
+                    },
+                    "required": ["query"],
+                    "additionalProperties": False,
+                },
+            ),
+            handler=_handle_web_search,
+        )
+    )
+
+    registry.register(
+        RegisteredTool(
+            name="fetch_url",
+            description="Safely retrieve and extract text from a specific documentation URL.",
+            read_only=True,
+            args_schema=FetchUrlArgs,
+            definition=ToolDefinition(
+                name="fetch_url",
+                description="Safely retrieve and extract text from a specific documentation URL.",
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "url": {
+                            "type": "string",
+                            "description": "HTTP or HTTPS URL of documentation page to safely retrieve.",
+                        },
+                        "max_chars": {
+                            "type": "integer",
+                            "description": "Maximum characters of extracted content to return.",
+                            "default": 12000,
+                        },
+                    },
+                    "required": ["url"],
+                    "additionalProperties": False,
+                },
+            ),
+            handler=_handle_fetch_url,
+        )
+    )
+
+    registry.register(
+        RegisteredTool(
+            name="search_documentation",
+            description="Search documentation for a package, framework, API, or language feature.",
+            read_only=True,
+            args_schema=SearchDocumentationArgs,
+            definition=ToolDefinition(
+                name="search_documentation",
+                description="Search documentation for a package, framework, API, or language feature.",
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "Documentation topic, API, function, or framework feature to search for.",
+                        },
+                        "package": {
+                            "type": "string",
+                            "description": "Optional package or library name (e.g. fastapi, pydantic).",
+                        },
+                        "version": {
+                            "type": "string",
+                            "description": "Optional package version to target.",
+                        },
+                        "domains": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Optional list of domain restrictions.",
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "Maximum number of documentation sources to retrieve.",
+                            "default": 5,
+                        },
+                    },
+                    "required": ["query"],
+                    "additionalProperties": False,
+                },
+            ),
+            handler=_handle_search_documentation,
+        )
+    )
+
+    registry.register(
+        RegisteredTool(
+            name="inspect_research",
+            description="Inspect a previously generated research report and its evidence.",
+            read_only=True,
+            args_schema=InspectResearchArgs,
+            definition=ToolDefinition(
+                name="inspect_research",
+                description="Inspect a previously generated research report and its evidence.",
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "research_id": {
+                            "type": "string",
+                            "description": "Unique identifier of previously generated research report.",
+                        },
+                        "source_id": {
+                            "type": "string",
+                            "description": "Optional source ID filter (e.g. src_1).",
+                        },
+                    },
+                    "required": ["research_id"],
+                    "additionalProperties": False,
+                },
+            ),
+            handler=_handle_inspect_research,
         )
     )
 

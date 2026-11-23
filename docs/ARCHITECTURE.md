@@ -241,6 +241,57 @@ Errors use this shape:
 
 `details` is omitted when it does not apply. The OpenAPI document references the shared error schema for route error responses.
 
+## Web research and evidence-grounded coding (Forge M4)
+
+The research subsystem (`backend/src/forge/research/`) provides provider-neutral web research, documentation retrieval, deterministic ranking, content caching, and citation-backed evidence grounding without introducing external agent frameworks or mandatory paid APIs:
+
+### 1. Bounded HTTP retrieval and security model (`fetcher.py`)
+
+`SafeDocumentFetcher` enforces strict boundaries against Server-Side Request Forgery (SSRF), DNS rebinding, and denial-of-service:
+- **Protocol restrictions**: Allows HTTP and HTTPS only. Rejects `file:`, `gopher:`, `ftp:`, `data:`, and `javascript:` schemes. Embedded credentials in URLs are rejected.
+- **SSRF defense & IP filtering**: Rejects `localhost`, local naming suffixes (`.local`, `.internal`, `.lan`, `.localhost`), and all private, loopback, link-local, multicast, and reserved IP ranges for both IPv4 and IPv6 (including IPv4-mapped IPv6 addresses, NAT64 prefixes, and documentation ranges).
+- **DNS rebinding prevention**: Uses a custom `SafeNetworkBackend` injected into `httpcore`. Hostnames are resolved to IP addresses and pre-validated against disallowed subnets; the TCP socket connects directly to the pre-validated IP address, eliminating the race window between name resolution and socket connection. Full TLS SNI and server hostname validation are preserved.
+- **Redirect security**: Disables automatic redirect following in `httpx`. The fetcher loops through redirects manually (up to a configurable maximum of 5), re-validating the target URL scheme, hostname, and resolved IP on every redirect hop. Sensitive headers are stripped when redirects transition across domains.
+- **Resource bounding**: Enforces connection (5s) and read (10s) timeouts, inspects `Content-Length` headers, streams response chunks, and aborts immediately if response payload exceeds the maximum response limit (default 2 MiB).
+- **Content type enforcement**: Permits only documentation and text MIME types (`text/html`, `application/xhtml+xml`, `text/plain`, `text/markdown`, `application/json`). Arbitrary binary files (executables, archives, media) are rejected.
+- **Error sanitization**: User-facing exceptions never leak internal network topology, private IPs, or internal subnets.
+
+### 2. Content extraction and normalization (`extraction.py`)
+
+Extracts clean technical documentation while stripping page boilerplate:
+- **Boilerplate exclusion**: Removes navigation headers (`<nav>`, `.navbar`, `.menu`), footers (`<footer>`), sidebars, cookie consent banners (`.cookie`, `.consent`, `.banner`), advertisements (`<aside>`, `.ad`), scripts, styles, SVG, and forms.
+- **Structure preservation**: Preserves document titles, heading hierarchy (`h1`–`h6`), code blocks (`<pre><code>` with exact whitespace and indentation preserved), markdown tables, lists, and documentation links.
+- **Multi-format support**: HTML parsing (`HTMLDocumentationParser`), Markdown extraction, structured JSON documentation extraction, and normalized plain text.
+- **Content hashing**: Computes SHA-256 hashes of extracted text for content-based deduplication and cache validation.
+
+### 3. Search provider abstraction (`providers/`)
+
+Provider-neutral web search interface (`SearchProvider` protocol):
+- **Brave Search adapter (`brave.py`)**: Official stable REST API supporting query submission, result limits, freshness/recency filters, domain restrictions via `site:<domain>`, and error normalization (rate limits, timeouts, authentication errors).
+- **Tavily adapter (`tavily.py`)**: Developer REST API adapter supporting query limits and domain filtering.
+- **SearXNG adapter (`searxng.py`)**: Self-hosted or public SearXNG instance integration via `SEARXNG_URL`.
+- **Mock adapter (`mock.py`)**: Deterministic search adapter for automated test suites without live network dependencies.
+- **Graceful degradation (`factory.py`)**: When no search provider is configured, `UnconfiguredSearchProvider` returns an actionable message explaining how to configure credentials, while direct URL fetching (`fetch_url`) remains fully functional.
+
+### 4. Persistence and document cache (`storage.py`, `cache.py`)
+
+- **Persistent cache**: Stores retrieved documentation in `.forge/research.sqlite3` with configurable TTL expiration (default 7 days), maximum document count limits (default 500), and maximum total cache size limits (default 50 MB) using deterministic FIFO/oldest-first eviction.
+- **Transactional report storage**: Versioned schema migration (`schema_migrations`) managing atomic persistence of research queries (`research_queries`), sources (`research_sources`), join links (`research_query_sources`), evidence excerpts (`evidence_excerpts`), citations (`citations`), and research reports (`research_reports`).
+- **Resilience**: Operates in WAL mode with busy timeouts and automatic corruption recovery.
+
+### 5. Ranking, deduplication, and evidence grounding (`ranking.py`, `citations.py`)
+
+- **Deterministic ranking**: Explainable multi-signal scoring: title keyword match (30%), heading keyword match (25%), content keyword density (20%), domain preference (25%), official documentation boost (15%), version matching (20% boost / -10% mismatch penalty), and reciprocal search rank.
+- **Deduplication**: Prunes duplicate sources using canonical URLs, normalized URL queries (stripping tracking parameters like `utm_*`), and SHA-256 content hashes.
+- **Verifiable citations**: Associates claims with stable identifiers (`src_1`, `src_2` / `[S1]`, `[S2]`). Citations require exact excerpt substrings found within retrieved sources and are validated before reports are generated.
+- **Structured findings**: Distinguishes verified facts, multi-source inferences, recommendations, unverified assumptions, and unresolved questions. Detects conflicting versions or documentation discrepancies across retrieved sources.
+- **Prompt-injection defense**: Wraps all external research evidence inside `<untrusted_evidence>` fences, neutralizes instruction override phrases (`[FILTERED_INSTRUCTION_OVERRIDE]`), and marks all research tools read-only.
+
+### 6. Agent integration and CLI
+
+- **Tool registry integration**: `web_search`, `fetch_url`, `search_documentation`, and `inspect_research` are registered with strict Pydantic argument schemas and marked `read_only=True`. They operate seamlessly across `plan`, `normal`, and `autonomous` execution policies without requiring write/command approvals.
+- **CLI interface**: `forge research <query>`, `forge research fetch <url>`, `forge research show <id>`, `forge research sources <id>`, and `forge research cache (--status | --clear)`.
+
 ## Configuration and trust boundaries
 
 - Backend settings are loaded from `backend/.env.local` and normal process environment variables. Environment variables take precedence.

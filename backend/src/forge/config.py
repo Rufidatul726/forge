@@ -25,6 +25,13 @@ class ForgeSettings(BaseSettings):
     oidc_required_role: str | None = None
     gemini_api_key: SecretStr | None = None
     openrouter_api_key: SecretStr | None = None
+    brave_search_api_key: SecretStr | None = None
+    tavily_api_key: SecretStr | None = None
+    searxng_url: str | None = None
+    search_provider: Literal["auto", "brave", "tavily", "searxng", "mock"] = "auto"
+    research_cache_ttl_days: int = 7
+    research_max_cache_documents: int = 500
+    research_max_cache_bytes: int = 50 * 1024 * 1024
     ollama_host: str = "http://127.0.0.1:11434"
     default_model: str = "ollama"
     agent_workspace_root: Path | None = None
@@ -45,6 +52,8 @@ class ForgeSettings(BaseSettings):
         "forge_api_key",
         "gemini_api_key",
         "openrouter_api_key",
+        "brave_search_api_key",
+        "tavily_api_key",
         "agent_workspace_root",
         "instance_id",
         mode="before",
