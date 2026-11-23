@@ -86,11 +86,59 @@ In `plan` mode, file modifications and commands are unconditionally blocked befo
 `CheckpointManager` (`backend/src/forge/context/checkpoint.py`) tracks file states before and after task executions:
 - **Task ID format validation**: Task IDs are strictly validated (`^[A-Za-z0-9_-]+$`, max 128 chars) to prevent directory traversal or checkpoint filename manipulation.
 - **Path and root security**: Restored paths are validated against the canonical workspace root; absolute paths, directory traversal sequences, symlinks, and files excluded by workspace security rules (`.env`, secrets, `.git`, ignored directories) are strictly rejected.
+- **Payload versioning & canonical checksum**: Checkpoint files on disk are versioned (`version: 1`) and contain a deterministic SHA-256 canonical payload checksum over the sorted JSON fields. Rollback validates this checksum to detect accidental file corruption or payload truncation before modifying workspace files. Unkeyed checksums detect accidental corruption; authenticated protection against local malicious tampering requires keeping HMAC keys outside the workspace.
 - **Pre-change state recording**: Before any file is modified or created in a task, its original pre-change content and SHA-256 hash are recorded. Subsequent edits within the same task preserve the original baseline. Unchanged files and rejected writes never record checkpoint snapshots.
 - **Post-change verification**: Post-change hashes are recorded from the actual resulting file on disk upon successful write.
 - **Conflict detection and safe rollback**: During rollback (`forge rollback` or `mgr.rollback(task_id)`), current file content is compared against the recorded post-change hash. If external changes occurred after the task, or if an existed file was deleted, rollback flags a conflict and skips the file to ensure unrelated user edits are never overwritten. Tampered snapshot data (such as checksum mismatches or corrupted payloads) is flagged as a conflict. Unmodified task changes are safely reverted (deleting files created in the task and restoring modified files atomically).
 
-### Repository context and token budget selection
+### Repository intelligence and context engineering (Forge M3)
+
+The repository intelligence system (`backend/src/forge/intelligence/`) provides bounded, incremental, persistent repository understanding and task-specific context retrieval:
+
+1. **Repository scanner & inventory (`scanner.py`)**:
+   - Walks the workspace directory hierarchy honoring `.gitignore`, workspace exclusions, and sensitive files (`.env`, credentials, secrets, `.git`, `.forge`, `node_modules`).
+   - Rejects directory traversal and symlink escapes without following symlinks.
+   - Computes streaming content SHA-256 hashes and file metadata bounded by `max_files` (default: 5,000) and `max_file_bytes` (default: 1 MiB).
+   - Detects project manifests (`pyproject.toml`, `requirements.txt`, `package.json`, `tsconfig.json`) and parses frameworks (FastAPI, React, Vite, pytest, etc.).
+   - Extracts Git metadata (branch, commit SHA, dirty status, modified files) when available without requiring Git.
+   - Generates deterministic repository maps with hierarchical directory trees and project summaries.
+
+2. **Language symbol analysis (`parsers/`)**:
+   - AST-based parsing for Python using standard library `ast`.
+   - Structural and token parsing for JavaScript, TypeScript, TSX, and JSX.
+   - Extracts functions, classes, methods, constants, line numbers, docstrings, and signatures.
+   - Tracks parent-child symbol relationships (methods belonging to classes, nested functions).
+   - Extracts imports and resolves references: resolves calls and instantiations to local declarations or imported module symbols, clearly distinguishing resolved references from unresolved/textual matches.
+   - Resilient against syntax errors and malformed files without aborting indexing runs.
+
+3. **Dependency and architecture intelligence (`architecture.py`)**:
+   - Detects backend and frontend project boundaries from manifests and directory conventions.
+   - Detects statically declared API routes (FastAPI `@app.get`, `@router.post`, Express `app.get`).
+   - Detects database models (SQLAlchemy, Django) and migration directories (`alembic/`, `migrations/`).
+   - Identifies test suites (pytest, vitest/jest) and config files.
+   - Maps module coupling via static imports with explicit confidence levels.
+
+4. **Persistent SQLite index (`store.py`, `indexer.py`)**:
+   - Versioned SQLite database at `<workspace>/.forge/index.sqlite3` with schema migration tracking.
+   - Tables: `repositories`, `files`, `symbols`, `imports`, `references_index`, `dependencies`, `index_runs`.
+   - Incremental indexing: compares file content hashes and modification times to re-index only added or modified files, cleans up deleted files, and tracks renames.
+   - Transactional safety: runs in SQLite WAL mode. Indexing runs are atomic; unhandled failures roll back changes and mark runs as failed. Interrupted runs are recovered safely on restart. Corrupted database files trigger automated fresh re-initialization.
+
+5. **Explainable context retrieval engine (`retrieval.py`)**:
+   - Task-oriented keyword and symbol extraction from user prompts.
+   - Multi-factor explainable relevance ranking: exact/substring symbol matches (+30-50), keyword path matches (+15), Git modifications boost (+40), associated test file matches (+25), and cross-file symbol references (+10).
+   - Deduplicates context items and attaches explicit relevance scores and reasons.
+
+6. **Token-budget-aware context builder (`context.py`)**:
+   - Enforces a configurable token budget ceiling with conservative estimation fallback (`chars // 4`).
+   - Fixed priority order: Project instructions (up to 25%), Repository map summary (up to 15%), Scored source files, Associated test files.
+   - Hard budget enforcement: strictly truncates or excludes lower-priority items when approaching the token limit without silent overflow.
+   - Generates a context manifest recording included items (path, tokens, score, reasons) and excluded items.
+
+7. **Agent integration & CLI commands**:
+   - Agent loop automatically retrieves task-relevant context before making decisions.
+   - CLI commands: `forge index`, `forge index --status`, `forge index --force`, `forge map`, `forge symbols <query>`, `forge references <symbol>`, `forge explain <path>`, and `forge context <task>`.
+
 
 `Workspace.discover_context` discovers root and nested `FORGE.md` and `AGENTS.md` instruction files throughout the repository hierarchy, sorting them so root guidelines take precedence. Context selection allocates explicit token budgets across instructions (~30%), repository file trees (~25%), and requested context files (~45%), fairly partitioning excerpts and strictly enforcing the overall token ceiling. `.gitignore` patterns and sensitive credential/key patterns are respected across all searches, listings, and reads.
 

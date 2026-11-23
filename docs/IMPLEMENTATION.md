@@ -39,6 +39,16 @@ This document is the implementation checklist and handoff point for the project.
 - [x] Nested `FORGE.md` and `AGENTS.md` instruction discovery and token-budget-aware context selection.
 - [x] Code symbol search (`search_symbols`, `forge symbols`) and `.gitignore`-aware workspace exploration.
 - [x] Reliable end-to-end coding workflow: exploration, code search, change planning, user approval, file modifications, test/lint execution, diff inspection, and verified outcome reporting.
+- [x] Repository intelligence scanner and inventory respecting `.gitignore`, exclusions, sensitive files, and symlink security (Forge M3).
+- [x] AST-based Python symbol extraction and structural JS/TS/JSX/TSX parsing with parent-child relationships and import extraction.
+- [x] Reference resolution distinguishing resolved symbols from textual/unresolved matches.
+- [x] Dependency, framework, API route, database model, test suite, and module coupling analysis.
+- [x] Persistent versioned SQLite index (`index.sqlite3`) with transactional incremental indexing and crash/interruption recovery.
+- [x] Task-oriented context retrieval with explainable relevance scoring across symbols, paths, Git changes, and tests.
+- [x] Token-budget-aware context builder with hard budget enforcement, conservative estimation, and context manifest reporting.
+- [x] CLI commands: `forge index` (with `--status` and `--force`), `forge map`, `forge references`, `forge explain`, and `forge context`.
+- [x] Agent context integration feeding grounded repository intelligence into autonomous and read-only execution loops.
+- [x] Hardened checkpoint payloads with versioning and canonical SHA-256 integrity checksum verification.
 
 ### Not implemented yet
 

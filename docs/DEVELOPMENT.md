@@ -96,7 +96,35 @@ uv run --project backend forge rollback
 
 Workspace file operations reject absolute paths, parent traversal, escaped symlinks, sensitive files, and common generated directories. Reads and writes are capped at 1 MiB per file; searches also cap candidate files and result lines. `forge write` previews a diff and asks for confirmation before replacing or creating one file. It snapshots pre-change file states via `CheckpointManager` so tasks can be safely rolled back using `forge rollback`. Rollback detects conflicts when files were modified after the task and will never overwrite unrelated user edits.
 
-`forge symbols` scans code files across the repository extracting functions, classes, methods, and interfaces without external language servers.
+`forge symbols` scans code files across the repository extracting functions, classes, methods, and interfaces without external language servers. It leverages the persistent SQLite index when present, falling back to workspace regex scanning.
+
+`forge index` builds an incremental, persistent SQLite index in `<workspace>/.forge/index.sqlite3`.
+- `forge index`: Runs incremental indexing, computing content SHA-256 hashes and updating only modified or added files.
+- `forge index --status`: Reports indexed file counts, total symbols, language breakdown, and last indexing run stats.
+- `forge index --force`: Triggers a clean rebuild from scratch.
+
+`forge map` prints a deterministic repository map with directory hierarchy, summaries, and detected project boundaries.
+
+`forge references <symbol>` lists references to a symbol across the repository, distinguishing resolved symbol targets from unresolved/textual references.
+
+`forge explain <path>` explains a file by listing its defined symbols, imports, incoming caller references, and associated test files.
+
+`forge context "<task>"` tests task-oriented context retrieval, outputting an explainable manifest of included/excluded files and token usage.
+
+### Repository intelligence specifications & limitations
+
+- **Supported languages**:
+  - Python (`.py`, `.pyi`): Full AST parsing extracting functions, classes, methods, docstrings, signatures, constants, imports, and reference calls.
+  - TypeScript & JavaScript (`.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`, `.cjs`): Structural and lexical parsing extracting classes, methods, functions, interfaces, type aliases, constants, ES6/CommonJS imports, and references.
+- **Unsupported analysis cases**:
+  - Dynamic runtime metaprogramming, `eval`, `getattr`, `importlib`, and monkey-patching cannot be fully resolved statically and are marked as unresolved/textual matches.
+  - Cross-file type inference without compilation artifacts.
+- **Indexing limits**:
+  - Maximum 5,000 files per workspace scan (`max_files`).
+  - Maximum 1 MiB per file (`max_file_bytes`). Larger files have bounded hash computation and are omitted from AST parsing.
+  - Excluded directories (`node_modules`, `.git`, `.forge`, `.venv`, cache dirs) and sensitive files (`.env`, secrets, private keys) are never indexed.
+- **Retrieval limitations**:
+  - Token budget enforcement is strictly applied with conservative token estimation (`~4 chars/token`). Lower-priority files are truncated or excluded when the budget ceiling is reached.
 
 `forge -p "..." --agent` enables the autonomous coding agent loop:
 - In `normal` mode (default), read operations execute automatically while writes and allowlisted commands require interactive user confirmation.

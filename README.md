@@ -92,13 +92,31 @@ uv run --project backend forge run --workspace . -- python --version
 uv run --project backend forge diff .
 uv run --project backend forge checkpoints
 uv run --project backend forge rollback
+uv run --project backend forge index
+uv run --project backend forge index --status
+uv run --project backend forge map
+uv run --project backend forge references User
+uv run --project backend forge explain src/example.py
+uv run --project backend forge context "Add validation to user registration"
 ```
 
 `forge models` checks configured providers and lists available models. Set `OLLAMA_HOST` in `backend/.env.local` if Ollama is not using its default local address.
 
-`forge files`, `forge read`, and `forge search` provide bounded access to the selected workspace. `forge symbols` performs symbol discovery for functions, classes, methods, and interfaces across code files. `forge write` shows a diff and requires explicit confirmation before atomically creating or replacing a file. It refuses sensitive paths, symlinks, parent traversal, and paths outside the workspace. Pass `--session <32-character-id>` to record approved, hash-only workspace change metadata in an existing session. Do not pass secrets as command-line content because shells may retain command history.
+`forge index` performs bounded, incremental repository indexing into a versioned SQLite database at `<workspace>/.forge/index.sqlite3`. It parses Python ASTs and TypeScript/JavaScript/JSX/TSX symbols, tracks imports, and resolves references without running code. Pass `--status` to view statistics and breakdown, or `--force` for a clean rebuild.
 
-`forge checkpoints` and `forge rollback` track file modifications per task and provide safe rollbacks. Rollback inspects current file hashes against post-change states and will never overwrite unrelated changes made by the user.
+`forge map` generates a deterministic repository map with directory hierarchies, detected ecosystems (Python, Node), frameworks, and architectural boundaries.
+
+`forge symbols <query>` searches functions, classes, methods, interfaces, and types using the persistent index (falling back to workspace regex search when unindexed).
+
+`forge references <symbol>` inspects references across the codebase, distinguishing resolved symbol definitions from textual/unresolved references.
+
+`forge explain <path>` inspects a file, summarizing its symbols, imports, incoming calls, and related test suites.
+
+`forge context <task>` runs task-oriented context retrieval with explainable relevance scoring, keyword matching, test correlation, Git change boosting, and hard token-budget enforcement with manifest reporting.
+
+`forge files`, `forge read`, and `forge search` provide bounded access to the selected workspace. `forge write` shows a diff and requires explicit confirmation before atomically creating or replacing a file. It refuses sensitive paths, symlinks, parent traversal, and paths outside the workspace. Pass `--session <32-character-id>` to record approved, hash-only workspace change metadata in an existing session. Do not pass secrets as command-line content because shells may retain command history.
+
+`forge checkpoints` and `forge rollback` track file modifications per task and provide safe rollbacks. Checkpoint payloads are versioned with canonical SHA-256 integrity checksums to detect accidental corruption or tampering, and rollback inspects current file hashes against post-change states to never overwrite unrelated changes made by the user.
 
 `forge run` allows only `git`, `npm`, `node`, `python`, `python3`, `pytest`, `ruff`, and `uv`. It displays the resolved executable, exact arguments, working directory, and timeout, then requires confirmation (default: no) for each invocation. It does not invoke a shell; execution has a timeout and bounded output, and only a small environment-variable allowlist is inherited. This is an approval gate, not an OS sandbox: an approved program runs as the current user and can access resources permitted to that account.
 
