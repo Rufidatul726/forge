@@ -122,9 +122,13 @@ Forge is structured for single-tenant or isolated team environments:
 
 `POST /api/v1/sessions`, `GET /api/v1/sessions`, `GET /api/v1/sessions/{session_id}`, and `DELETE /api/v1/sessions/{session_id}` require the generation bearer key and configured agent workspace root. They create, list, retrieve, and delete sessions in the workspace-local SQLite store. Session IDs are opaque UUID values; deletion targets one exact ID and cascades only its associated turns and outcomes.
 
+### Metrics endpoint
+
+`GET /api/v1/metrics` exposes Prometheus-compatible text metrics (`text/plain; version=0.0.4; charset=utf-8`) for scraping across multi-instance clusters. It reports `forge_instance_info` (with instance ID, environment, and version), `forge_http_requests_total` partitioned by method, path, status code, and instance ID, `forge_http_request_duration_seconds` latency histograms and counts, `forge_http_requests_in_flight` active request gauges, and `forge_rate_limited_requests_total` counters.
+
 ## Error and request tracing contract
 
-All responses include a server-generated `X-Request-ID`. The ID is also present in request-completion logs and in the JSON body for errors. Validation errors include field locations, error messages, and types, but never echo submitted values. Unexpected errors return a generic message; logs record the exception type without exception text.
+All responses include a server-propagated or server-generated `X-Request-ID`. In multi-instance distributed environments, the server also returns `X-Instance-ID` identifying the serving replica, preserves and echoes caller-provided `X-Correlation-ID` headers, and participates in W3C Trace Context (`traceparent` header propagation with per-hop child span IDs). The request and trace identifiers are present in request-completion logs and in the JSON body for errors. Validation errors include field locations, error messages, and types, but never echo submitted values. Unexpected errors return a generic message; logs record the exception type without exception text. Structured JSON logging (`LOG_FORMAT=json`) formats all log records as single-line JSON with timestamps, logger names, instance IDs, trace IDs, and performance metrics for centralized log aggregation.
 
 Errors use this shape:
 
@@ -153,6 +157,9 @@ Errors use this shape:
 - `AGENT_WORKSPACE_ROOT` is a server-only, explicit root for the read-only agent task endpoint; callers cannot override it.
 - Session data is retained at `AGENT_WORKSPACE_ROOT/.forge/sessions.sqlite3`, which workspace tools exclude from readable context.
 - `ENVIRONMENT` selects `development`, `test`, or `production`; `LOG_LEVEL` selects the backend log level.
+- `INSTANCE_ID` configures the unique node identifier (1-64 alphanumeric, hyphens, underscores, dots) for distributed clusters, auto-generated if omitted.
+- `LOG_FORMAT` selects `text` (default) or `json` for machine-parseable structured logging.
+- `METRICS_ENABLED` enables or disables Prometheus metrics scraping at `/api/v1/metrics`.
 - `RATE_LIMIT_REQUESTS` and `RATE_LIMIT_WINDOW_SECONDS` configure a process-local sliding-window limit for authenticated generation, task, and session routes. It uses the direct client address and intentionally ignores forwarded-address headers; production deployments with multiple instances require an equivalent shared edge limit.
 - The API allows GET and POST plus the Authorization header and does not enable credentialed CORS.
 - The UI displays backend connection failures; it does not treat an unavailable API as a successful response.

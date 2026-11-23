@@ -496,7 +496,8 @@ def test_cors_allows_configured_frontend_origin(app: FastAPI):
         "authorization"
         in generation_preflight.headers["Access-Control-Allow-Headers"].lower()
     )
-    assert response.headers["Access-Control-Expose-Headers"] == "X-Request-ID"
+    assert "X-Request-ID" in response.headers["Access-Control-Expose-Headers"]
+    assert "X-Instance-ID" in response.headers["Access-Control-Expose-Headers"]
 
 
 def test_production_settings_require_explicit_secure_cors_origins():
@@ -1161,3 +1162,71 @@ def test_agent_tasks_stream_emits_error_event_on_provider_error(monkeypatch, tmp
     assert "event: error" in response.text
     assert "provider_unavailable" in response.text
     assert "The configured model provider is unavailable." in response.text
+
+
+def test_distributed_observability_headers_and_instance_id(app: FastAPI, settings: ForgeSettings):
+    custom_req_id = "req-client-987654"
+    custom_corr_id = "corr-distributed-flow-123"
+    traceparent_in = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+
+    response = request(
+        app,
+        "GET",
+        "/api/v1/health",
+        headers={
+            "X-Request-ID": custom_req_id,
+            "X-Correlation-ID": custom_corr_id,
+            "traceparent": traceparent_in,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.headers["X-Request-ID"] == custom_req_id
+    assert response.headers["X-Correlation-ID"] == custom_corr_id
+    assert response.headers["X-Instance-ID"] == settings.instance_id
+    assert response.headers["traceparent"].startswith("00-4bf92f3577b34da6a3ce929d0e0e4736-")
+    assert response.headers["traceparent"].endswith("-01")
+
+
+def test_metrics_endpoint_records_requests(app: FastAPI, settings: ForgeSettings):
+    # Perform a request so metrics has entries
+    request(app, "GET", "/api/v1/health")
+
+    response = request(app, "GET", "/api/v1/metrics")
+    assert response.status_code == 200
+    assert "text/plain" in response.headers["content-type"]
+    body = response.text
+    assert f'forge_instance_info{{instance_id="{settings.instance_id}",environment="{settings.environment}",version="0.1.0"}} 1' in body
+    assert f'forge_http_requests_total{{method="GET",path="/api/v1/health",status="200",instance_id="{settings.instance_id}"}}' in body
+    assert f'forge_http_requests_in_flight{{instance_id="{settings.instance_id}"}} 1' in body
+
+
+def test_structured_json_logging():
+    captured = []
+
+    class DummyHandler(logging.Handler):
+        def emit(self, record):
+            captured.append(self.format(record))
+
+    handler = DummyHandler()
+    from forge.api.observability import JsonLogFormatter
+    handler.setFormatter(JsonLogFormatter())
+
+    app = create_app(ForgeSettings(_env_file=None, log_format="json"))
+    api_logger = logging.getLogger("forge.api")
+    api_logger.addHandler(handler)
+
+    try:
+        response = request(app, "GET", "/api/v1/health")
+        assert response.status_code == 200
+        assert len(captured) > 0
+        parsed = json.loads(captured[-1])
+        assert parsed["logger"] == "forge.api"
+        assert parsed["path"] == "/api/v1/health"
+        assert parsed["status_code"] == 200
+        assert "instance_id" in parsed
+        assert "request_id" in parsed
+    finally:
+        api_logger.removeHandler(handler)
+
+

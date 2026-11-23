@@ -163,7 +163,7 @@ Validation errors may include sanitized field locations and messages. Unexpected
 
 ## Backend configuration
 
-`backend/.env.local` accepts `ENVIRONMENT` (`development`, `test`, or `production`), provider settings, `DEFAULT_MODEL`, `CORS_ORIGINS`, and `LOG_LEVEL` (`DEBUG`, `INFO`, `WARNING`, or `ERROR`). Environment variables override the local file.
+`backend/.env.local` accepts `ENVIRONMENT` (`development`, `test`, or `production`), provider settings, `DEFAULT_MODEL`, `CORS_ORIGINS`, `INSTANCE_ID`, `LOG_FORMAT` (`text` or `json`), `METRICS_ENABLED`, and `LOG_LEVEL` (`DEBUG`, `INFO`, `WARNING`, or `ERROR`). Environment variables override the local file.
 
 `FORGE_API_KEY` must be at least 32 characters when set. Generate one with `uv run --project backend python -c "import secrets; print(secrets.token_urlsafe(32))"` and keep it server-side. For production, set `ENVIRONMENT=production`, configure `FORGE_API_KEY`, and explicitly configure HTTPS origins in `CORS_ORIGINS`. The backend rejects wildcard, malformed, and localhost production origins. The development defaults are intended only for local use.
 
@@ -195,8 +195,9 @@ Additional setup and troubleshooting notes are in [Development](docs/DEVELOPMENT
 
 Production releases should use explicit HTTPS CORS origins, a secret-managed
 `FORGE_API_KEY` of at least 32 characters, and a mounted persistent workspace
-directory. `GET /api/v1/health` is suitable for liveness and
-`GET /api/v1/ready` reports whether the workspace and API key are configured.
+directory. `GET /api/v1/health` is suitable for liveness,
+`GET /api/v1/ready` reports whether the workspace and API key are configured,
+and `GET /api/v1/metrics` exposes Prometheus operational metrics across instances.
 
 The repository includes backend and frontend container images. Build them from
 the repository root:

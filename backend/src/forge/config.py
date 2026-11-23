@@ -1,17 +1,21 @@
 import ipaddress
+import re
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 from urllib.parse import urlsplit
+from uuid import uuid4
 
 from pydantic import SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _BACKEND_ROOT = Path(__file__).resolve().parents[2]
+_INSTANCE_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_\-\.]{1,64}$")
 
 
 class ForgeSettings(BaseSettings):
     environment: Literal["development", "test", "production"] = "development"
+    instance_id: str | None = None
     auth_mode: Literal["api_key", "oidc", "api_key_or_oidc"] = "api_key"
     forge_api_key: SecretStr | None = None
     oidc_issuer: str | None = None
@@ -26,6 +30,8 @@ class ForgeSettings(BaseSettings):
     agent_workspace_root: Path | None = None
     cors_origins: str = "http://localhost:5173"
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
+    log_format: Literal["text", "json"] = "text"
+    metrics_enabled: bool = True
     rate_limit_requests: int = 60
     rate_limit_window_seconds: int = 60
 
@@ -40,6 +46,7 @@ class ForgeSettings(BaseSettings):
         "gemini_api_key",
         "openrouter_api_key",
         "agent_workspace_root",
+        "instance_id",
         mode="before",
     )
     @classmethod
@@ -72,6 +79,12 @@ class ForgeSettings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_cors_origins(self) -> "ForgeSettings":
+        if self.instance_id:
+            if not _INSTANCE_ID_PATTERN.match(self.instance_id):
+                raise ValueError("INSTANCE_ID must contain 1-64 alphanumeric characters, underscores, hyphens, or dots")
+        else:
+            self.instance_id = uuid4().hex[:12]
+
         if self.rate_limit_requests < 1:
             raise ValueError("RATE_LIMIT_REQUESTS must be at least 1")
         if self.rate_limit_window_seconds < 1:

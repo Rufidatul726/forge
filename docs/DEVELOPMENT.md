@@ -31,6 +31,9 @@ Backend environment variables:
 | `AGENT_WORKSPACE_ROOT` | empty | Required server-side workspace root for read-only `POST /api/v1/agent/tasks` |
 | `CORS_ORIGINS` | `http://localhost:5173` | Comma-separated allowed browser origins |
 | `LOG_LEVEL` | `INFO` | Backend log level: `DEBUG`, `INFO`, `WARNING`, or `ERROR` |
+| `INSTANCE_ID` | auto-generated | Unique node identifier for distributed clusters |
+| `LOG_FORMAT` | `text` | Log format: `text` or `json` for structured log aggregators |
+| `METRICS_ENABLED` | `true` | Whether Prometheus metrics scraping is enabled at `GET /api/v1/metrics` |
 | `RATE_LIMIT_REQUESTS` | `60` | Maximum requests from one direct client in each rate-limit window for authenticated generation, task, and session routes |
 | `RATE_LIMIT_WINDOW_SECONDS` | `60` | Positive length of the process-local rate-limit window in seconds |
 
