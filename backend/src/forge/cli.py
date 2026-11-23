@@ -11,7 +11,7 @@ from rich.text import Text
 from forge.config import ForgeSettings, forge_directory, instructions_path
 from forge.context import Workspace, WorkspaceError, WriteProposal
 from forge.execution import CommandError, CommandProposal, CommandRunner
-from forge.agent import AgentService, AgentTaskRequest
+from forge.agent import AgentService, AgentTaskRequest, ExecutionPolicy
 from forge.providers import ProviderError, get_provider
 from forge.providers.models import ChatMessage
 from forge.sessions import SessionNotFoundError, SessionStore
@@ -43,6 +43,7 @@ def main(
     plan: bool = typer.Option(False, "--plan", help="Start in planning mode."),
     continue_session: bool = typer.Option(False, "--continue", help="Resume the previous session."),
     agent: bool = typer.Option(False, "--agent", help="Allow a bounded tool loop with per-action approval."),
+    policy: str | None = typer.Option(None, "--policy", help="Execution policy: plan, normal, or autonomous."),
 ) -> None:
     if ctx.invoked_subcommand is not None:
         return
@@ -52,6 +53,18 @@ def main(
     settings = ForgeSettings()
     if model:
         settings.default_model = model
+
+    exec_policy: ExecutionPolicy = ExecutionPolicy.NORMAL
+    if policy is not None:
+        try:
+            exec_policy = ExecutionPolicy(policy.lower())
+        except ValueError:
+            console.print(f"[red]Invalid policy:[/] {policy}. Must be one of: plan, normal, autonomous")
+            raise typer.BadParameter(
+                f"Invalid policy '{policy}'. Must be one of: plan, normal, autonomous"
+            )
+    elif plan:
+        exec_policy = ExecutionPolicy.PLAN
 
     if prompt:
         console.print(
@@ -127,6 +140,7 @@ def main(
                         task,
                         approve_write=approve_write,
                         approve_command=approve_command,
+                        policy=exec_policy,
                     )
                 )
             else:
@@ -174,7 +188,7 @@ def main(
             border_style="cyan",
         )
     )
-    mode = "plan" if plan else "normal"
+    mode = policy.lower() if policy else ("plan" if plan else "normal")
     console.print(f"[dim]Workspace:[/] {root}")
     console.print(f"[dim]Mode:[/] {mode}")
     if plan:

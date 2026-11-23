@@ -26,6 +26,12 @@ This document is the implementation checklist and handoff point for the project.
 - [x] Add a stateless, authenticated, read-only workspace task endpoint.
 - [x] Add real-time SSE streaming for agent tasks (`POST /api/v1/agent/tasks/stream`) with provider-level streaming across Ollama, Gemini, and OpenRouter.
 - [x] Expand frontend automated unit and component test coverage for sessions, settings, streaming, and cancellation.
+- [x] Replace text-based `<forge_tool_call>` with native structured tool calling (Forge M1).
+- [x] Introduce provider-neutral models: ToolDefinition, ToolCall, ToolResult, AssistantMessage, ProviderResponse.
+- [x] Extend provider protocol and implement native structured tool calling for Ollama, Gemini, and OpenRouter adapters.
+- [x] Add ToolRegistry and ToolDispatcher with strict parameter schema validation (forbidding unexpected fields).
+- [x] Add execution policies: plan (read-only, no mutations/commands), normal (approval required for writes and commands), autonomous (explicit permissions).
+- [x] Enforce `--plan --agent` restrictions ensuring planning mode cannot mutate files or execute commands.
 
 ### Not implemented yet
 

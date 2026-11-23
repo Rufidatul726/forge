@@ -1,6 +1,7 @@
 import json
 from collections.abc import AsyncIterator, Mapping
 from typing import Any
+from uuid import uuid4
 
 import httpx
 
@@ -11,7 +12,15 @@ from forge.providers.errors import (
     ProviderTimeoutError,
     ProviderUnavailableError,
 )
-from forge.providers.models import GenerationChunk, GenerationRequest, GenerationResult
+from forge.providers.models import (
+    AssistantMessage,
+    ChatMessage,
+    GenerationChunk,
+    GenerationRequest,
+    GenerationResult,
+    ProviderResponse,
+    ToolCall,
+)
 from forge.providers.ollama import (
     DEFAULT_MAX_RESPONSE_BYTES,
     DEFAULT_TIMEOUT_SECONDS,
@@ -121,16 +130,32 @@ class GeminiProvider(_CloudProvider):
             names.append(model)
         return names
 
-    async def generate(self, request: GenerationRequest) -> GenerationResult:
+    async def generate(self, request: GenerationRequest) -> ProviderResponse:
         contents: list[dict[str, Any]] = []
         system_parts: list[dict[str, str]] = []
         for message in request.messages:
-            part = {"text": message.content}
             if message.role == "system":
-                system_parts.append(part)
+                system_parts.append({"text": message.content})
+            elif message.role == "tool":
+                contents.append({
+                    "role": "user",
+                    "parts": [{
+                        "functionResponse": {
+                            "name": message.name or "tool",
+                            "response": {"result": message.content},
+                        }
+                    }],
+                })
+            elif message.tool_calls:
+                parts: list[dict[str, Any]] = []
+                if message.content:
+                    parts.append({"text": message.content})
+                for tc in message.tool_calls:
+                    parts.append({"functionCall": {"name": tc.name, "args": tc.arguments}})
+                contents.append({"role": "model", "parts": parts})
             else:
                 contents.append(
-                    {"role": "model" if message.role == "assistant" else "user", "parts": [part]}
+                    {"role": "model" if message.role == "assistant" else "user", "parts": [{"text": message.content}]}
                 )
 
         payload: dict[str, Any] = {
@@ -139,6 +164,17 @@ class GeminiProvider(_CloudProvider):
         }
         if system_parts:
             payload["systemInstruction"] = {"parts": system_parts}
+        if request.tools:
+            function_declarations = [
+                {
+                    "name": tool.name,
+                    "description": tool.description,
+                    "parameters": tool.parameters,
+                }
+                for tool in request.tools
+            ]
+            payload["tools"] = [{"functionDeclarations": function_declarations}]
+
         response = await self._request_json(
             "POST",
             f"/v1beta/models/{request.model}:generateContent",
@@ -157,10 +193,39 @@ class GeminiProvider(_CloudProvider):
         parts = content.get("parts")
         if not isinstance(parts, list):
             raise ProviderResponseError
-        text = "".join(part.get("text", "") for part in parts if isinstance(part, Mapping))
-        if not text:
+
+        text_parts: list[str] = []
+        tool_calls: list[ToolCall] = []
+        for part in parts:
+            if not isinstance(part, Mapping):
+                continue
+            if "text" in part and isinstance(part["text"], str):
+                text_parts.append(part["text"])
+            if "functionCall" in part and isinstance(part["functionCall"], Mapping):
+                fc = part["functionCall"]
+                fn_name = fc.get("name")
+                if isinstance(fn_name, str) and fn_name:
+                    fn_args = fc.get("args") or {}
+                    if not isinstance(fn_args, Mapping):
+                        fn_args = {}
+                    tool_calls.append(ToolCall(id=uuid4().hex, name=fn_name, arguments=dict(fn_args)))
+
+        text = "".join(text_parts)
+        if not text and not tool_calls:
             raise ProviderResponseError
-        return GenerationResult(model=request.model, content=text, done=True)
+
+        assistant_message = AssistantMessage(
+            role="assistant",
+            content=text,
+            tool_calls=tool_calls,
+        )
+        return ProviderResponse(
+            model=request.model,
+            content=text,
+            message=assistant_message,
+            tool_calls=tool_calls,
+            done=True,
+        )
 
     async def stream_generate(
         self, request: GenerationRequest
@@ -229,7 +294,7 @@ class GeminiProvider(_CloudProvider):
                                     if isinstance(parts, list):
                                         text = "".join(
                                             p.get("text", "")
-                                            for p in parts
+                                             for p in parts
                                             if isinstance(p, Mapping)
                                         )
                                         if text:
@@ -271,13 +336,56 @@ class OpenRouterProvider(_CloudProvider):
             names.append(name.strip())
         return names
 
-    async def generate(self, request: GenerationRequest) -> GenerationResult:
-        payload = {
+    async def generate(self, request: GenerationRequest) -> ProviderResponse:
+        messages_payload: list[dict[str, Any]] = []
+        for message in request.messages:
+            if message.role == "tool":
+                messages_payload.append({
+                    "role": "tool",
+                    "content": message.content,
+                    "tool_call_id": message.tool_call_id or "",
+                })
+            elif message.tool_calls:
+                messages_payload.append({
+                    "role": "assistant",
+                    "content": message.content or None,
+                    "tool_calls": [
+                        {
+                            "id": tc.id,
+                            "type": "function",
+                            "function": {
+                                "name": tc.name,
+                                "arguments": json.dumps(tc.arguments) if isinstance(tc.arguments, dict) else str(tc.arguments),
+                            },
+                        }
+                        for tc in message.tool_calls
+                    ],
+                })
+            else:
+                messages_payload.append({
+                    "role": message.role,
+                    "content": message.content,
+                })
+
+        payload: dict[str, Any] = {
             "model": request.model,
-            "messages": [message.model_dump() for message in request.messages],
+            "messages": messages_payload,
             "max_tokens": request.max_tokens,
             "stream": False,
         }
+        if request.tools:
+            payload["tools"] = [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": tool.name,
+                        "description": tool.description,
+                        "parameters": tool.parameters,
+                    },
+                }
+                for tool in request.tools
+            ]
+
         response = await self._request_json(
             "POST",
             "/chat/completions",
@@ -293,18 +401,54 @@ class OpenRouterProvider(_CloudProvider):
         message = choice.get("message")
         if not isinstance(message, Mapping) or message.get("role") != "assistant":
             raise ProviderResponseError
-        content = message.get("content")
+        content = message.get("content") or ""
         model = response.get("model", request.model)
-        if not isinstance(content, str) or not content or not isinstance(model, str):
+
+        raw_tool_calls = message.get("tool_calls")
+        tool_calls: list[ToolCall] = []
+        if isinstance(raw_tool_calls, list):
+            for raw_call in raw_tool_calls:
+                if not isinstance(raw_call, Mapping):
+                    raise ProviderResponseError
+                fn = raw_call.get("function")
+                if not isinstance(fn, Mapping):
+                    raise ProviderResponseError
+                fn_name = fn.get("name")
+                if not isinstance(fn_name, str) or not fn_name:
+                    raise ProviderResponseError
+                fn_args = fn.get("arguments", {})
+                if isinstance(fn_args, str):
+                    try:
+                        fn_args = json.loads(fn_args)
+                    except json.JSONDecodeError as exc:
+                        raise ProviderResponseError from exc
+                if not isinstance(fn_args, Mapping):
+                    raise ProviderResponseError
+                call_id = raw_call.get("id") or uuid4().hex
+                tool_calls.append(ToolCall(id=str(call_id), name=fn_name, arguments=dict(fn_args)))
+
+        if not content and not tool_calls:
             raise ProviderResponseError
-        return GenerationResult(model=model, content=content, done=True)
+
+        assistant_message = AssistantMessage(
+            role="assistant",
+            content=content,
+            tool_calls=tool_calls,
+        )
+        return ProviderResponse(
+            model=model,
+            content=content,
+            message=assistant_message,
+            tool_calls=tool_calls,
+            done=True,
+        )
 
     async def stream_generate(
         self, request: GenerationRequest
     ) -> AsyncIterator[GenerationChunk]:
         payload = {
             "model": request.model,
-            "messages": [message.model_dump() for message in request.messages],
+            "messages": [message.model_dump(exclude_none=True) for message in request.messages],
             "max_tokens": request.max_tokens,
             "stream": True,
         }
@@ -323,7 +467,6 @@ class OpenRouterProvider(_CloudProvider):
                     if response.status_code >= 400:
                         raise ProviderRequestError
                     total_bytes = 0
-                    has_sent_done = False
                     async for line in response.aiter_lines():
                         line = line.strip()
                         if not line:
@@ -335,11 +478,7 @@ class OpenRouterProvider(_CloudProvider):
                         if not line.startswith("data:"):
                             continue
                         data_str = line.removeprefix("data:").strip()
-                        if not data_str:
-                            continue
                         if data_str == "[DONE]":
-                            has_sent_done = True
-                            yield GenerationChunk(content="", done=True, model=request.model)
                             break
                         try:
                             data = json.loads(data_str)
@@ -357,14 +496,12 @@ class OpenRouterProvider(_CloudProvider):
                                 if isinstance(delta, Mapping):
                                     text = delta.get("content")
                                     if isinstance(text, str) and text:
-                                        model = data.get("model", request.model)
                                         yield GenerationChunk(
                                             content=text,
                                             done=False,
-                                            model=model,
+                                            model=data.get("model", request.model),
                                         )
-                    if not has_sent_done:
-                        yield GenerationChunk(content="", done=True, model=request.model)
+                    yield GenerationChunk(content="", done=True, model=request.model)
         except httpx.TimeoutException as exc:
             raise ProviderTimeoutError from exc
         except httpx.RequestError as exc:

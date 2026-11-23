@@ -29,12 +29,20 @@ The API owns browser-facing contracts and CORS. Provider/model execution, reposi
 
 ## Model provider boundary
 
-`backend/src/forge/providers/protocol.py` defines the async `ModelProvider` interface. Provider-neutral chat messages and bounded generation options live in `providers/models.py`; adapters map those models to provider-specific protocols and raise typed errors with safe public messages.
+`backend/src/forge/providers/protocol.py` defines the async `ModelProvider` interface. Provider-neutral chat messages, generation options, and structured tool calling models live in `providers/models.py`; adapters map those models to provider-specific protocols and raise typed errors with safe public messages.
+
+The provider-neutral models for structured tool calling are:
+- `ToolDefinition`: Describes a tool with its name, description, and strict JSON Schema parameter specifications.
+- `ToolCall`: Represents a structured tool invocation requested by the model with an identifier, tool name, and parsed arguments.
+- `ToolResult`: Represents the result of a tool execution sent back to the model, including execution status and text content.
+- `AssistantMessage`: An assistant message containing optional text content and/or structured `ToolCall` instances.
+- `ProviderResponse`: Standardized provider response holding model name, assistant message, structured tool calls, completion status, and text content (with `GenerationResult` subclass for backward compatibility).
 
 The provider adapters are `OllamaProvider`, `GeminiProvider`, and `OpenRouterProvider`:
 
-- Ollama reads the server-only `OLLAMA_HOST` setting and uses `/api/tags` to list installed models and `/api/chat` for non-streaming and streaming generation.
-- Gemini uses the server-only `GEMINI_API_KEY` with the Gemini REST API; OpenRouter uses the server-only `OPENROUTER_API_KEY` with its OpenAI-compatible REST API.
+- Ollama reads the server-only `OLLAMA_HOST` setting and uses `/api/tags` to list installed models and `/api/chat` for generation and native structured tool calling via the `tools` array.
+- Gemini uses the server-only `GEMINI_API_KEY` with the Gemini REST API (`generateContent` with `functionDeclarations` and `functionCall`/`functionResponse` mapping).
+- OpenRouter uses the server-only `OPENROUTER_API_KEY` with its OpenAI-compatible REST API (`chat/completions` with native tool definitions and `tool_calls`).
 - All adapters implement `list_models()`, `generate()`, and `stream_generate()` yielding `GenerationChunk` objects.
 - Requests have a 30-second timeout, generation is capped at 8,192 tokens, and response bodies are limited to 2 MiB.
 - Network, timeout, HTTP, malformed response, and oversized response failures map to typed provider errors without returning upstream response bodies.
@@ -43,11 +51,30 @@ The provider adapters are `OllamaProvider`, `GeminiProvider`, and `OpenRouterPro
 
 Provider API keys must remain server-side and must not be included in logs or frontend responses.
 
-## Read-only workspace context
+## Read-only workspace context and tool architecture
 
 `backend/src/forge/context/workspace.py` provides bounded workspace file discovery, UTF-8 reads, text search, optional `FORGE.md` instruction loading, and guarded file writes. Operations accept workspace-relative paths and patterns, reject traversal and absolute paths, resolve symlinks before access, and exclude common generated directories and credential-bearing files. Reads and scans have byte, result, and candidate limits. Binary and oversized files are skipped in searches and reported in the result metadata.
 
-The CLI agent loop is opt-in through `forge -p "..." --agent`. It caps provider/tool cycles, accepts only structured read, search, write, and command tool calls, and feeds bounded tool results back into the next provider request. Read tools run directly; write tools reuse preview-first workspace writes; command tools reuse the allowlisted, shell-free command runner. Every write and command action requires a fresh default-no approval callback. The loop is not exposed through HTTP agent routes, so API callers remain read-only. Tool outcomes persisted to sessions contain only the tool name and success status, not file content or command output.
+### Tool registry, strict schemas, and dispatcher
+
+Tools are managed through `ToolRegistry` (`backend/src/forge/agent/registry.py`) and executed through `ToolDispatcher` (`backend/src/forge/agent/dispatcher.py`):
+- `read_file`: Reads UTF-8 contents of a relative workspace file. Strict schema `ReadFileArgs` forbids extra fields.
+- `search_text`: Performs bounded text searches across readable files. Strict schema `SearchTextArgs` forbids extra fields.
+- `write_file`: Preview-first workspace file modification requiring explicit confirmation. Strict schema `WriteFileArgs` forbids extra fields.
+- `run_command`: Execution of allowlisted development executables without a shell. Strict schema `RunCommandArgs` forbids extra fields.
+
+Every tool argument payload is validated against strict Pydantic schemas with `model_config = ConfigDict(extra="forbid")`. Unknown tools, malformed arguments, and unexpected fields are rejected immediately with structured error results and do not break the agent execution loop.
+
+### Execution policies
+
+Execution policies are governed by `ExecutionPolicy` (`backend/src/forge/agent/policy.py`):
+- `plan`: Read-only. File modifications and command executions are strictly prohibited and rejected before prompting for approval.
+- `normal`: Read operations are automatic; file writes and commands require interactive user approval.
+- `autonomous`: Only explicitly permitted actions are executed without interactive confirmation.
+
+The CLI agent loop is opt-in through `forge -p "..." --agent`. It caps provider/tool cycles at 8 steps, issues native structured tool definitions to the provider, dispatches structured tool calls, and returns tool results to the provider in subsequent turns.
+When `--plan --agent` is invoked, the `plan` execution policy is enforced, guaranteeing that no file writes or command executions can occur.
+The autonomous tool loop is not exposed through HTTP agent routes, so API callers remain strictly read-only. Tool outcomes persisted to sessions contain only the tool name and success status, not file content or command output.
 
 The CLI exposes these capabilities as `forge files`, `forge read`, `forge search`, and `forge write`. Writes are proposed as a unified diff and require an explicit confirmation callback; the operation rechecks the previous content hash after approval, writes through a temporary file followed by atomic replacement, and returns/logs hashes and byte counts without file contents. Write targets must not be symlinks and their parent directories must already exist.
 

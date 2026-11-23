@@ -9,7 +9,17 @@ from forge.providers.errors import (
 )
 from forge.providers.cloud import GeminiProvider, OpenRouterProvider
 from forge.providers.ollama import OllamaProvider
-from forge.providers.models import GenerationChunk, GenerationRequest, GenerationResult
+from forge.providers.models import (
+    AssistantMessage,
+    ChatMessage,
+    GenerationChunk,
+    GenerationRequest,
+    GenerationResult,
+    ProviderResponse,
+    ToolCall,
+    ToolDefinition,
+    ToolResult,
+)
 from forge.providers.protocol import ModelProvider
 
 
@@ -31,6 +41,8 @@ def get_provider(name: str, settings: ForgeSettings | None = None) -> ModelProvi
 
 
 __all__ = [
+    "AssistantMessage",
+    "ChatMessage",
     "GeminiProvider",
     "GenerationChunk",
     "GenerationRequest",
@@ -44,5 +56,9 @@ __all__ = [
     "ProviderResponseTooLargeError",
     "ProviderTimeoutError",
     "ProviderUnavailableError",
+    "ProviderResponse",
+    "ToolCall",
+    "ToolDefinition",
+    "ToolResult",
     "get_provider",
 ]

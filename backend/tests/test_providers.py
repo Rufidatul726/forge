@@ -436,3 +436,155 @@ def test_ollama_stream_yields_terminal_chunk_if_not_sent():
     assert chunks[0].done is False
     assert chunks[1].content == ""
     assert chunks[1].done is True
+
+
+def test_ollama_generate_with_tools_and_tool_call_response():
+    from forge.providers.models import ToolDefinition
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        data = json.loads(request.content)
+        assert "tools" in data
+        assert data["tools"][0]["type"] == "function"
+        assert data["tools"][0]["function"]["name"] == "read_file"
+        return httpx.Response(
+            200,
+            json={
+                "model": "qwen2.5-coder:7b",
+                "message": {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "read_file",
+                                "arguments": {"path": "src/main.py"},
+                            }
+                        }
+                    ],
+                },
+                "done": True,
+            },
+        )
+
+    result = asyncio.run(
+        provider(respond).generate(
+            GenerationRequest(
+                model="qwen2.5-coder:7b",
+                messages=[ChatMessage(role="user", content="Read src/main.py")],
+                tools=[
+                    ToolDefinition(
+                        name="read_file",
+                        description="Read a file",
+                        parameters={"type": "object", "properties": {"path": {"type": "string"}}},
+                    )
+                ],
+            )
+        )
+    )
+    assert len(result.tool_calls) == 1
+    assert result.tool_calls[0].name == "read_file"
+    assert result.tool_calls[0].arguments == {"path": "src/main.py"}
+    assert result.message.tool_calls[0].name == "read_file"
+
+
+def test_gemini_generate_with_tools_and_function_call_response():
+    from forge.providers.models import ToolDefinition
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        data = json.loads(request.content)
+        assert "tools" in data
+        assert data["tools"][0]["functionDeclarations"][0]["name"] == "search_text"
+        return httpx.Response(
+            200,
+            json={
+                "candidates": [
+                    {
+                        "content": {
+                            "role": "model",
+                            "parts": [
+                                {
+                                    "functionCall": {
+                                        "name": "search_text",
+                                        "args": {"query": "auth"},
+                                    }
+                                }
+                            ],
+                        }
+                    }
+                ]
+            },
+        )
+
+    result = asyncio.run(
+        gemini_provider(respond).generate(
+            GenerationRequest(
+                model="gemini-2.5-pro",
+                messages=[ChatMessage(role="user", content="Find auth")],
+                tools=[
+                    ToolDefinition(
+                        name="search_text",
+                        description="Search text",
+                        parameters={"type": "object", "properties": {"query": {"type": "string"}}},
+                    )
+                ],
+            )
+        )
+    )
+    assert len(result.tool_calls) == 1
+    assert result.tool_calls[0].name == "search_text"
+    assert result.tool_calls[0].arguments == {"query": "auth"}
+
+
+def test_openrouter_generate_with_tools_and_tool_call_response():
+    from forge.providers.models import ToolDefinition
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        data = json.loads(request.content)
+        assert "tools" in data
+        assert data["tools"][0]["type"] == "function"
+        assert data["tools"][0]["function"]["name"] == "read_file"
+        return httpx.Response(
+            200,
+            json={
+                "model": "qwen/qwen3-coder",
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": None,
+                            "tool_calls": [
+                                {
+                                    "id": "call_abc123",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "read_file",
+                                        "arguments": '{"path": "README.md"}',
+                                    },
+                                }
+                            ],
+                        }
+                    }
+                ],
+            },
+        )
+
+    result = asyncio.run(
+        openrouter_provider(respond).generate(
+            GenerationRequest(
+                model="qwen/qwen3-coder",
+                messages=[ChatMessage(role="user", content="Read README.md")],
+                tools=[
+                    ToolDefinition(
+                        name="read_file",
+                        description="Read file",
+                        parameters={"type": "object", "properties": {"path": {"type": "string"}}},
+                    )
+                ],
+            )
+        )
+    )
+    assert len(result.tool_calls) == 1
+    assert result.tool_calls[0].id == "call_abc123"
+    assert result.tool_calls[0].name == "read_file"
+    assert result.tool_calls[0].arguments == {"path": "README.md"}
+

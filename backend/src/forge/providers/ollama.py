@@ -2,6 +2,7 @@ import json
 from collections.abc import AsyncIterator, Mapping
 from typing import Any
 from urllib.parse import urlsplit
+from uuid import uuid4
 
 import httpx
 
@@ -12,7 +13,14 @@ from forge.providers.errors import (
     ProviderTimeoutError,
     ProviderUnavailableError,
 )
-from forge.providers.models import GenerationChunk, GenerationRequest, GenerationResult
+from forge.providers.models import (
+    AssistantMessage,
+    ChatMessage,
+    GenerationChunk,
+    GenerationRequest,
+    ProviderResponse,
+    ToolCall,
+)
 
 DEFAULT_TIMEOUT_SECONDS = 30.0
 DEFAULT_MAX_RESPONSE_BYTES = 2 * 1024 * 1024
@@ -70,23 +78,57 @@ class OllamaProvider:
             names.append(name.strip())
         return names
 
-    async def generate(self, request: GenerationRequest) -> GenerationResult:
+    def _format_messages(self, messages: list[ChatMessage]) -> list[dict[str, Any]]:
+        formatted: list[dict[str, Any]] = []
+        for message in messages:
+            item: dict[str, Any] = {
+                "role": message.role,
+                "content": message.content,
+            }
+            if message.tool_calls:
+                item["tool_calls"] = [
+                    {
+                        "function": {
+                            "name": tc.name,
+                            "arguments": tc.arguments,
+                        }
+                    }
+                    for tc in message.tool_calls
+                ]
+            formatted.append(item)
+        return formatted
+
+    async def generate(self, request: GenerationRequest) -> ProviderResponse:
+        body: dict[str, Any] = {
+            "model": request.model,
+            "messages": self._format_messages(request.messages),
+            "stream": False,
+            "options": {"num_predict": request.max_tokens},
+        }
+        if request.tools:
+            body["tools"] = [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": tool.name,
+                        "description": tool.description,
+                        "parameters": tool.parameters,
+                    },
+                }
+                for tool in request.tools
+            ]
+
         payload = await self._request_json(
             "POST",
             "/api/chat",
-            {
-                "model": request.model,
-                "messages": [message.model_dump() for message in request.messages],
-                "stream": False,
-                "options": {"num_predict": request.max_tokens},
-            },
+            body,
         )
         message = payload.get("message")
         if not isinstance(message, Mapping):
             raise ProviderResponseError
 
         role = message.get("role")
-        content = message.get("content")
+        content = message.get("content") or ""
         model = payload.get("model", request.model)
         done = payload.get("done")
         if (
@@ -97,14 +139,52 @@ class OllamaProvider:
         ):
             raise ProviderResponseError
 
-        return GenerationResult(model=model, content=content, done=done)
+        raw_tool_calls = message.get("tool_calls")
+        tool_calls: list[ToolCall] = []
+        if isinstance(raw_tool_calls, list):
+            for raw_call in raw_tool_calls:
+                if not isinstance(raw_call, Mapping):
+                    raise ProviderResponseError
+                fn = raw_call.get("function")
+                if not isinstance(fn, Mapping):
+                    raise ProviderResponseError
+                fn_name = fn.get("name")
+                if not isinstance(fn_name, str) or not fn_name:
+                    raise ProviderResponseError
+                fn_args = fn.get("arguments", {})
+                if isinstance(fn_args, str):
+                    try:
+                        fn_args = json.loads(fn_args)
+                    except json.JSONDecodeError as exc:
+                        raise ProviderResponseError from exc
+                if not isinstance(fn_args, Mapping):
+                    raise ProviderResponseError
+                call_id = raw_call.get("id") or uuid4().hex
+                tool_calls.append(ToolCall(id=str(call_id), name=fn_name, arguments=dict(fn_args)))
+
+        if not content and not tool_calls:
+            # Allow empty content if tool_calls is present; if both empty, error
+            raise ProviderResponseError
+
+        assistant_message = AssistantMessage(
+            role="assistant",
+            content=content,
+            tool_calls=tool_calls,
+        )
+        return ProviderResponse(
+            model=model,
+            content=content,
+            message=assistant_message,
+            tool_calls=tool_calls,
+            done=done,
+        )
 
     async def stream_generate(
         self, request: GenerationRequest
     ) -> AsyncIterator[GenerationChunk]:
         payload = {
             "model": request.model,
-            "messages": [message.model_dump() for message in request.messages],
+            "messages": self._format_messages(request.messages),
             "stream": True,
             "options": {"num_predict": request.max_tokens},
         }

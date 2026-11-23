@@ -5,15 +5,24 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field, field_validator
 
-from forge.context import Workspace, WorkspaceError
+from forge.agent.dispatcher import ToolDispatcher
+from forge.agent.policy import ExecutionPolicy, ExecutionPolicyConfig
+from forge.agent.registry import (
+    ToolExecutionContext,
+    ToolRegistry,
+    create_default_registry,
+)
+from forge.context import Workspace
 from forge.context.workspace import WriteProposal
-from forge.execution import CommandError, CommandProposal, CommandRunner
+from forge.execution import CommandProposal, CommandRunner
 from forge.providers import ModelProvider
 from forge.providers.models import (
     ChatMessage,
     GenerationChunk,
     GenerationRequest,
     GenerationResult,
+    ProviderResponse,
+    ToolCall,
 )
 
 MAX_CONTEXT_FILES = 10
@@ -37,18 +46,8 @@ class AgentTaskRequest(BaseModel):
         return value.strip()
 
 
-class AgentTaskResult(BaseModel):
-    generation: GenerationResult
-    workspace_root: str
-    context_paths: list[str]
-    session_id: str | None = None
-    read_only: bool = True
-    tool_outcomes: list["AgentToolOutcome"] = Field(default_factory=list, exclude=True)
-
-
-class AgentToolCall(BaseModel):
-    name: str = Field(min_length=1, max_length=64)
-    arguments: dict[str, object] = Field(default_factory=dict)
+class AgentToolCall(ToolCall):
+    pass
 
 
 class AgentToolOutcome(BaseModel):
@@ -57,13 +56,30 @@ class AgentToolOutcome(BaseModel):
     result: str = Field(max_length=64_000)
 
 
-class AgentService:
-    """Build repository context and run bounded repository tasks."""
+class AgentTaskResult(BaseModel):
+    generation: ProviderResponse
+    workspace_root: str
+    context_paths: list[str]
+    session_id: str | None = None
+    read_only: bool = True
+    tool_outcomes: list[AgentToolOutcome] = Field(default_factory=list, exclude=True)
 
-    def __init__(self, workspace_root: Path, provider: ModelProvider) -> None:
+
+class AgentService:
+    """Build repository context and run bounded repository tasks with native tool calling."""
+
+    def __init__(
+        self,
+        workspace_root: Path,
+        provider: ModelProvider,
+        *,
+        registry: ToolRegistry | None = None,
+        command_runner: CommandRunner | None = None,
+    ) -> None:
         self._workspace = Workspace(workspace_root)
         self._provider = provider
-        self._command_runner = CommandRunner(workspace_root)
+        self._command_runner = command_runner or CommandRunner(workspace_root)
+        self._registry = registry or create_default_registry()
 
     async def run_autonomous(
         self,
@@ -71,68 +87,100 @@ class AgentService:
         *,
         approve_write: Callable[[WriteProposal], bool],
         approve_command: Callable[[CommandProposal], bool],
+        policy: ExecutionPolicy = ExecutionPolicy.NORMAL,
+        policy_config: ExecutionPolicyConfig | None = None,
         max_steps: int = MAX_AGENT_STEPS,
     ) -> AgentTaskResult:
         if not 1 <= max_steps <= MAX_AGENT_STEPS:
             raise ValueError(f"Agent steps must be between 1 and {MAX_AGENT_STEPS}")
 
+        active_policy = policy_config or ExecutionPolicyConfig(policy=policy)
         context = self._build_context(task.context_paths)
+
+        context_obj = ToolExecutionContext(
+            workspace=self._workspace,
+            command_runner=self._command_runner,
+            policy_config=active_policy,
+            approve_write=approve_write,
+            approve_command=approve_command,
+        )
+        dispatcher = ToolDispatcher(self._registry, context_obj)
+
+        policy_note = ""
+        if active_policy.policy == ExecutionPolicy.PLAN:
+            policy_note = "\nYou are in PLAN mode: read-only actions are permitted; write and command actions are forbidden."
+
         system_message = ChatMessage(
             role="system",
             content=(
-                "You are Forge, an autonomous repository assistant. Use tools only when "
-                "needed, and never claim a mutation or command succeeded unless its tool "
-                "result confirms it.\n\n"
-                "Emit at most one tool call as a JSON object in a <forge_tool_call> block "
-                "and stop when the task is complete. Available tools:\n"
-                '- read_file: {\"name\":\"read_file\",\"arguments\":{\"path\":\"src/main.py\"}}\n'
-                '- search_text: {\"name\":\"search_text\",\"arguments\":{\"query\":\"needle\",\"pattern\":\"**/*.py\",\"limit\":100}}\n'
-                '- write_file: {\"name\":\"write_file\",\"arguments\":{\"path\":\"src/main.py\",\"content\":\"...\"}}\n'
-                '- run_command: {\"name\":\"run_command\",\"arguments\":{\"argv\":[\"pytest\",\"-q\"],\"cwd\":\".\",\"timeout_seconds\":30}}\n\n'
-                "Writing files and running commands require separate user approval. "
-                "Do not emit shell commands, executable paths, or tool calls for unknown tools.\n\n"
+                "You are Forge, an autonomous repository assistant. Use native tools only when "
+                "needed to inspect the workspace, search text, write files, or run allowlisted commands. "
+                "Never claim a mutation or command succeeded unless its tool result confirms it."
+                f"{policy_note}\n\n"
                 f"{context}"
             ),
         )
         messages = [system_message, *task.messages]
         outcomes: list[AgentToolOutcome] = []
+        tools = self._registry.get_definitions()
+        is_read_only = active_policy.policy == ExecutionPolicy.PLAN
 
         for _ in range(max_steps):
-            generation = await self._provider.generate(
+            response = await self._provider.generate(
                 GenerationRequest(
                     model=task.model,
                     messages=messages,
                     max_tokens=task.max_tokens,
+                    tools=tools,
                 )
             )
-            call = self._parse_tool_call(generation.content)
-            if call is None:
+
+            tool_calls = list(response.tool_calls)
+            # If native tool calls are empty, check for legacy text-based tool calls as fallback
+            if not tool_calls and response.content:
+                parsed_call = self._parse_legacy_tool_call(response.content)
+                if parsed_call is not None:
+                    tool_calls.append(parsed_call)
+
+            if not tool_calls:
                 return AgentTaskResult(
-                    generation=generation,
+                    generation=response,
                     workspace_root=str(self._workspace.root),
                     context_paths=task.context_paths,
-                    read_only=False,
+                    read_only=is_read_only,
                     tool_outcomes=outcomes,
                 )
 
-            messages.append(ChatMessage(role="assistant", content=generation.content))
-            outcome = await self._execute_tool_call(
-                call,
-                approve_write=approve_write,
-                approve_command=approve_command,
-            )
-            outcomes.append(outcome)
+            # Record assistant turn with tool calls
             messages.append(
                 ChatMessage(
-                    role="user",
-                    content=(
-                        f"<forge_tool_result name=\"{outcome.name}\" "
-                        f"ok=\"{str(outcome.ok).lower()}\">{outcome.result}</forge_tool_result>"
-                    ),
+                    role="assistant",
+                    content=response.content,
+                    tool_calls=tool_calls,
                 )
             )
 
-        generation = await self._provider.generate(
+            # Dispatch each tool call sequentially
+            for call in tool_calls:
+                tool_result = await dispatcher.dispatch(call)
+                outcomes.append(
+                    AgentToolOutcome(
+                        name=tool_result.name,
+                        ok=tool_result.ok,
+                        result=tool_result.content,
+                    )
+                )
+                messages.append(
+                    ChatMessage(
+                        role="tool",
+                        content=tool_result.content,
+                        name=tool_result.name,
+                        tool_call_id=call.id,
+                    )
+                )
+
+        # Max steps reached: prompt provider for a concise summary without tools
+        final_response = await self._provider.generate(
             GenerationRequest(
                 model=task.model,
                 messages=[
@@ -147,10 +195,10 @@ class AgentService:
             )
         )
         return AgentTaskResult(
-            generation=generation,
+            generation=final_response,
             workspace_root=str(self._workspace.root),
             context_paths=task.context_paths,
-            read_only=False,
+            read_only=is_read_only,
             tool_outcomes=outcomes,
         )
 
@@ -160,12 +208,16 @@ class AgentService:
         *,
         approve_write: Callable[[WriteProposal], bool],
         approve_command: Callable[[CommandProposal], bool],
+        policy: ExecutionPolicy = ExecutionPolicy.NORMAL,
+        policy_config: ExecutionPolicyConfig | None = None,
         max_steps: int = MAX_AGENT_STEPS,
     ) -> AgentTaskResult:
         return await self.run_autonomous(
             task,
             approve_write=approve_write,
             approve_command=approve_command,
+            policy=policy,
+            policy_config=policy_config,
             max_steps=max_steps,
         )
 
@@ -191,6 +243,7 @@ class AgentService:
             generation=generation,
             workspace_root=str(self._workspace.root),
             context_paths=task.context_paths,
+            read_only=True,
         )
 
     async def stream(
@@ -219,7 +272,7 @@ class AgentService:
             result = await self._provider.generate(request)
             yield GenerationChunk(content=result.content, done=True, model=result.model)
 
-    def _parse_tool_call(self, content: str) -> AgentToolCall | None:
+    def _parse_legacy_tool_call(self, content: str) -> ToolCall | None:
         candidates: list[str] = []
         marked = re.findall(
             r"<forge_tool_call>\s*(.*?)\s*</forge_tool_call>",
@@ -236,7 +289,7 @@ class AgentService:
                 payload = json.loads(candidate)
             except json.JSONDecodeError:
                 continue
-            call = self._normalize_tool_payload(payload)
+            call = self._normalize_legacy_payload(payload)
             if call is not None:
                 return call
 
@@ -244,116 +297,16 @@ class AgentService:
             payload = json.loads(content.strip())
         except json.JSONDecodeError:
             return None
-        return self._normalize_tool_payload(payload)
+        return self._normalize_legacy_payload(payload)
 
-    def _normalize_tool_payload(self, payload: object) -> AgentToolCall | None:
+    def _normalize_legacy_payload(self, payload: object) -> ToolCall | None:
         if not isinstance(payload, Mapping):
             return None
         name = payload.get("name", payload.get("tool"))
         arguments = payload.get("arguments", payload.get("args", {}))
         if not isinstance(name, str) or not isinstance(arguments, Mapping):
             return None
-        if name not in {"read_file", "search_text", "write_file", "run_command"}:
-            return None
-        return AgentToolCall(name=name, arguments=dict(arguments))
-
-    async def _execute_tool_call(
-        self,
-        call: AgentToolCall,
-        *,
-        approve_write: Callable[[WriteProposal], bool],
-        approve_command: Callable[[CommandProposal], bool],
-    ) -> AgentToolOutcome:
-        try:
-            if call.name == "read_file":
-                path = call.arguments.get("path")
-                if not isinstance(path, str):
-                    raise ValueError("read_file requires a string path")
-                content = self._workspace.read_text(path)
-                return AgentToolOutcome(name=call.name, ok=True, result=content[:64_000])
-
-            if call.name == "search_text":
-                query = call.arguments.get("query")
-                pattern = call.arguments.get("pattern", "**/*")
-                limit = call.arguments.get("limit", 100)
-                case_sensitive = call.arguments.get("case_sensitive", False)
-                if not isinstance(query, str):
-                    raise ValueError("search_text requires a string query")
-                if not isinstance(pattern, str):
-                    raise ValueError("search_text pattern must be a string")
-                if not isinstance(limit, int) or isinstance(limit, bool):
-                    raise ValueError("search_text limit must be an integer")
-                if not isinstance(case_sensitive, bool):
-                    raise ValueError("search_text case_sensitive must be a boolean")
-                results = self._workspace.search_text(
-                    query,
-                    pattern=pattern,
-                    limit=limit,
-                    case_sensitive=case_sensitive,
-                )
-                lines = [
-                    f"{match.path}:{match.line_number}: {match.line}"
-                    for match in results.matches
-                ]
-                return AgentToolOutcome(
-                    name=call.name,
-                    ok=True,
-                    result="\n".join(lines) or "No matches found.",
-                )
-
-            if call.name == "write_file":
-                path = call.arguments.get("path")
-                content = call.arguments.get("content")
-                if not isinstance(path, str) or not isinstance(content, str):
-                    raise ValueError("write_file requires string path and content")
-                result = self._workspace.write_text(
-                    path,
-                    content,
-                    approve=approve_write,
-                )
-                return AgentToolOutcome(
-                    name=call.name,
-                    ok=True,
-                    result=(
-                        f"{'Updated' if result.changed else 'No change needed for'} "
-                        f"{result.path}; bytes_written={result.bytes_written}"
-                    ),
-                )
-
-            if call.name == "run_command":
-                argv = call.arguments.get("argv")
-                cwd = call.arguments.get("cwd", ".")
-                timeout = call.arguments.get("timeout_seconds", 30)
-                if not isinstance(argv, list) or not all(isinstance(item, str) for item in argv):
-                    raise ValueError("run_command argv must be a list of strings")
-                if not isinstance(cwd, str):
-                    raise ValueError("run_command cwd must be a string")
-                if not isinstance(timeout, (int, float)) or isinstance(timeout, bool):
-                    raise ValueError("run_command timeout_seconds must be numeric")
-                result = await self._command_runner.run(
-                    argv,
-                    approve=approve_command,
-                    cwd=cwd,
-                    timeout_seconds=float(timeout),
-                )
-                result_text = (
-                    f"exit_code={result.exit_code}; timed_out={str(result.timed_out).lower()}\n"
-                    f"stdout:\n{result.stdout}\n"
-                    f"stderr:\n{result.stderr}"
-                )
-                return AgentToolOutcome(
-                    name=call.name,
-                    ok=result.exit_code == 0 and not result.timed_out,
-                    result=result_text,
-                )
-
-            raise ValueError(f"Unknown tool: {call.name}")
-        except (WorkspaceError, CommandError, ValueError) as error:
-            return AgentToolOutcome(
-                name=call.name,
-                ok=False,
-                result=getattr(error, "public_message", str(error)),
-            )
+        return ToolCall(name=name, arguments=dict(arguments))
 
     def _build_context(self, context_paths: list[str]) -> str:
         discovered = self._workspace.discover_context(file_limit=200)

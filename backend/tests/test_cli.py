@@ -62,6 +62,53 @@ def test_agent_prompt_runs_bounded_agent_loop(tmp_path, monkeypatch):
     assert "Session:" in result.stdout
 
 
+def test_cli_plan_and_agent_flags_prohibit_mutations(tmp_path, monkeypatch):
+    class MutatingProvider:
+        def __init__(self):
+            self.calls = 0
+
+        async def generate(self, payload):
+            self.calls += 1
+            if self.calls == 1:
+                from forge.providers.models import ProviderResponse, ToolCall
+
+                return ProviderResponse(
+                    model=payload.model,
+                    content="",
+                    tool_calls=[
+                        ToolCall(
+                            name="write_file",
+                            arguments={"path": "forbidden.txt", "content": "mutated!"},
+                        )
+                    ],
+                    done=True,
+                )
+            from forge.providers.models import ProviderResponse
+
+            return ProviderResponse(
+                model=payload.model,
+                content="Plan mode prevented file mutation.",
+                done=True,
+            )
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("forge.cli.get_provider", lambda name, settings: MutatingProvider())
+    result = runner.invoke(app, ["-p", "Create a file", "--agent", "--plan"])
+
+    assert result.exit_code == 0
+    assert not (tmp_path / "forbidden.txt").exists()
+    assert "Apply this exact change?" not in result.stdout
+    assert "Plan mode prevented file mutation." in result.stdout
+
+
+def test_cli_invalid_policy_flag_rejected(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(app, ["-p", "Hi", "--agent", "--policy", "unknown_mode"])
+    assert result.exit_code != 0
+    assert "Invalid policy" in result.stdout or "Invalid value" in result.stdout
+
+
+
 def test_diff_outside_repository(tmp_path):
     result = runner.invoke(app, ["diff", str(tmp_path)])
     assert result.exit_code == 1
