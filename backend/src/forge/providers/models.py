@@ -92,3 +92,4 @@ class GenerationChunk(BaseModel):
     content: str
     done: bool
     model: str | None = None
+    tool_calls: list[ToolCall] = Field(default_factory=list)

@@ -32,6 +32,13 @@ This document is the implementation checklist and handoff point for the project.
 - [x] Add ToolRegistry and ToolDispatcher with strict parameter schema validation (forbidding unexpected fields).
 - [x] Add execution policies: plan (read-only, no mutations/commands), normal (approval required for writes and commands), autonomous (explicit permissions).
 - [x] Enforce `--plan --agent` restrictions ensuring planning mode cannot mutate files or execute commands.
+- [x] Complete provider consistency (Forge M2): Gemini streaming structured tool calling, Ollama and OpenRouter streaming tool calls, and safe malformed payload handling.
+- [x] Provider contract test suite across all adapters.
+- [x] Hierarchical execution policy configuration (global `~/.forge/config.json`, project `<workspace>/.forge/config.json`, `--allow-tool`, and strict read-only Plan mode).
+- [x] Checkpoint recording and safe rollback (`CheckpointManager`, `forge rollback`), with conflict detection protecting user edits from overwrite.
+- [x] Nested `FORGE.md` and `AGENTS.md` instruction discovery and token-budget-aware context selection.
+- [x] Code symbol search (`search_symbols`, `forge symbols`) and `.gitignore`-aware workspace exploration.
+- [x] Reliable end-to-end coding workflow: exploration, code search, change planning, user approval, file modifications, test/lint execution, diff inspection, and verified outcome reporting.
 
 ### Not implemented yet
 

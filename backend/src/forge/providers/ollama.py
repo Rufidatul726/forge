@@ -144,21 +144,21 @@ class OllamaProvider:
         if isinstance(raw_tool_calls, list):
             for raw_call in raw_tool_calls:
                 if not isinstance(raw_call, Mapping):
-                    raise ProviderResponseError
+                    continue
                 fn = raw_call.get("function")
                 if not isinstance(fn, Mapping):
-                    raise ProviderResponseError
+                    continue
                 fn_name = fn.get("name")
                 if not isinstance(fn_name, str) or not fn_name:
-                    raise ProviderResponseError
+                    continue
                 fn_args = fn.get("arguments", {})
                 if isinstance(fn_args, str):
                     try:
                         fn_args = json.loads(fn_args)
-                    except json.JSONDecodeError as exc:
-                        raise ProviderResponseError from exc
+                    except json.JSONDecodeError:
+                        fn_args = {"_raw_malformed_arguments": fn.get("arguments")}
                 if not isinstance(fn_args, Mapping):
-                    raise ProviderResponseError
+                    fn_args = {"_raw_arguments": str(fn_args)}
                 call_id = raw_call.get("id") or uuid4().hex
                 tool_calls.append(ToolCall(id=str(call_id), name=fn_name, arguments=dict(fn_args)))
 
@@ -182,12 +182,24 @@ class OllamaProvider:
     async def stream_generate(
         self, request: GenerationRequest
     ) -> AsyncIterator[GenerationChunk]:
-        payload = {
+        payload: dict[str, Any] = {
             "model": request.model,
             "messages": self._format_messages(request.messages),
             "stream": True,
             "options": {"num_predict": request.max_tokens},
         }
+        if request.tools:
+            payload["tools"] = [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": tool.name,
+                        "description": tool.description,
+                        "parameters": tool.parameters,
+                    },
+                }
+                for tool in request.tools
+            ]
         try:
             async with httpx.AsyncClient(
                 base_url=self._base_url,
@@ -216,15 +228,44 @@ class OllamaProvider:
                             raise ProviderRequestError
                         message = item.get("message")
                         content = ""
+                        chunk_tool_calls: list[ToolCall] = []
                         if isinstance(message, Mapping):
                             text = message.get("content")
                             if isinstance(text, str):
                                 content = text
+                            raw_tool_calls = message.get("tool_calls")
+                            if isinstance(raw_tool_calls, list):
+                                for raw_call in raw_tool_calls:
+                                    if not isinstance(raw_call, Mapping):
+                                        continue
+                                    fn = raw_call.get("function")
+                                    if not isinstance(fn, Mapping):
+                                        continue
+                                    fn_name = fn.get("name")
+                                    if not isinstance(fn_name, str) or not fn_name:
+                                        continue
+                                    fn_args = fn.get("arguments", {})
+                                    if isinstance(fn_args, str):
+                                        try:
+                                            fn_args = json.loads(fn_args)
+                                        except json.JSONDecodeError:
+                                            fn_args = {"_raw_malformed_arguments": fn.get("arguments")}
+                                    if not isinstance(fn_args, Mapping):
+                                        fn_args = {"_raw_arguments": str(fn_args)}
+                                    call_id = raw_call.get("id") or uuid4().hex
+                                    chunk_tool_calls.append(
+                                        ToolCall(id=str(call_id), name=fn_name, arguments=dict(fn_args))
+                                    )
                         model = item.get("model", request.model)
                         done = bool(item.get("done", False))
                         if done:
                             has_sent_done = True
-                        yield GenerationChunk(content=content, done=done, model=model)
+                        yield GenerationChunk(
+                            content=content,
+                            done=done,
+                            model=model,
+                            tool_calls=chunk_tool_calls,
+                        )
                     if not has_sent_done:
                         yield GenerationChunk(content="", done=True, model=request.model)
         except httpx.TimeoutException as exc:

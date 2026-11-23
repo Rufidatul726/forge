@@ -1,5 +1,9 @@
 from forge.agent.dispatcher import ToolDispatcher
-from forge.agent.policy import ExecutionPolicy, ExecutionPolicyConfig
+from forge.agent.policy import (
+    ExecutionPolicy,
+    ExecutionPolicyConfig,
+    load_execution_policy_config,
+)
 from forge.agent.registry import (
     RegisteredTool,
     ToolExecutionContext,
@@ -28,6 +32,7 @@ __all__ = [
     "AgentToolOutcome",
     "ExecutionPolicy",
     "ExecutionPolicyConfig",
+    "load_execution_policy_config",
     "ReadFileArgs",
     "RegisteredTool",
     "RunCommandArgs",

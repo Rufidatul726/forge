@@ -6,12 +6,14 @@ from pydantic import BaseModel
 
 from forge.agent.policy import ExecutionPolicyConfig
 from forge.agent.schemas import (
+    ListFilesArgs,
     ReadFileArgs,
     RunCommandArgs,
+    SearchSymbolsArgs,
     SearchTextArgs,
     WriteFileArgs,
 )
-from forge.context import Workspace, WorkspaceError
+from forge.context import CheckpointManager, Workspace, WorkspaceError
 from forge.context.workspace import WriteProposal
 from forge.execution import CommandError, CommandProposal, CommandRunner
 from forge.providers.models import ToolDefinition, ToolResult
@@ -24,6 +26,8 @@ class ToolExecutionContext:
     policy_config: ExecutionPolicyConfig
     approve_write: Callable[[WriteProposal], bool]
     approve_command: Callable[[CommandProposal], bool]
+    checkpoint_manager: CheckpointManager | None = None
+    task_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -94,7 +98,18 @@ async def _handle_write_file(args: WriteFileArgs, ctx: ToolExecutionContext) -> 
             if ctx.policy_config.requires_approval("write_file", read_only=False)
             else (lambda p: True)
         )
+        if ctx.checkpoint_manager and ctx.task_id:
+            try:
+                pre_content = ctx.workspace.read_text(args.path)
+            except WorkspaceError:
+                pre_content = None
+            ctx.checkpoint_manager.record_pre_change(ctx.task_id, args.path, pre_content)
+
         result = ctx.workspace.write_text(args.path, args.content, approve=approve)
+
+        if ctx.checkpoint_manager and ctx.task_id:
+            ctx.checkpoint_manager.record_post_change(ctx.task_id, args.path, args.content)
+
         return ToolResult(
             name="write_file",
             ok=True,
@@ -106,6 +121,46 @@ async def _handle_write_file(args: WriteFileArgs, ctx: ToolExecutionContext) -> 
     except WorkspaceError as error:
         return ToolResult(
             name="write_file",
+            ok=False,
+            content=getattr(error, "public_message", str(error)),
+        )
+
+
+async def _handle_search_symbols(args: SearchSymbolsArgs, ctx: ToolExecutionContext) -> ToolResult:
+    try:
+        results = ctx.workspace.search_symbols(
+            args.query,
+            pattern=args.pattern,
+            limit=args.limit,
+        )
+        lines = [
+            f"{m.path}:{m.line_number} [{m.kind}] {m.name} -> {m.line}"
+            for m in results.matches
+        ]
+        return ToolResult(
+            name="search_symbols",
+            ok=True,
+            content="\n".join(lines) or "No matching symbols found.",
+        )
+    except WorkspaceError as error:
+        return ToolResult(
+            name="search_symbols",
+            ok=False,
+            content=getattr(error, "public_message", str(error)),
+        )
+
+
+async def _handle_list_files(args: ListFilesArgs, ctx: ToolExecutionContext) -> ToolResult:
+    try:
+        listing = ctx.workspace.list_files(pattern=args.pattern, limit=args.limit)
+        return ToolResult(
+            name="list_files",
+            ok=True,
+            content="\n".join(listing.paths) or "No matching files found.",
+        )
+    except WorkspaceError as error:
+        return ToolResult(
+            name="list_files",
             ok=False,
             content=getattr(error, "public_message", str(error)),
         )
@@ -236,6 +291,71 @@ def create_default_registry() -> ToolRegistry:
                 },
             ),
             handler=_handle_write_file,
+        )
+    )
+
+    registry.register(
+        RegisteredTool(
+            name="search_symbols",
+            description="Search for programming language symbols (classes, functions, methods, interfaces, etc.) in the workspace.",
+            read_only=True,
+            args_schema=SearchSymbolsArgs,
+            definition=ToolDefinition(
+                name="search_symbols",
+                description="Search for programming language symbols (classes, functions, methods, interfaces, etc.) in the workspace.",
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "Symbol name substring to search for (function, class, method, etc.).",
+                        },
+                        "pattern": {
+                            "type": "string",
+                            "description": "Glob pattern to filter code files.",
+                            "default": "**/*",
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "Maximum number of symbol matches to return.",
+                            "default": 50,
+                        },
+                    },
+                    "required": ["query"],
+                    "additionalProperties": False,
+                },
+            ),
+            handler=_handle_search_symbols,
+        )
+    )
+
+    registry.register(
+        RegisteredTool(
+            name="list_files",
+            description="List workspace files matching a glob pattern.",
+            read_only=True,
+            args_schema=ListFilesArgs,
+            definition=ToolDefinition(
+                name="list_files",
+                description="List workspace files matching a glob pattern.",
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "pattern": {
+                            "type": "string",
+                            "description": "Glob pattern to filter file paths.",
+                            "default": "**/*",
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "Maximum number of files to return.",
+                            "default": 100,
+                        },
+                    },
+                    "additionalProperties": False,
+                },
+            ),
+            handler=_handle_list_files,
         )
     )
 

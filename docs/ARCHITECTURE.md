@@ -60,17 +60,37 @@ Provider API keys must remain server-side and must not be included in logs or fr
 Tools are managed through `ToolRegistry` (`backend/src/forge/agent/registry.py`) and executed through `ToolDispatcher` (`backend/src/forge/agent/dispatcher.py`):
 - `read_file`: Reads UTF-8 contents of a relative workspace file. Strict schema `ReadFileArgs` forbids extra fields.
 - `search_text`: Performs bounded text searches across readable files. Strict schema `SearchTextArgs` forbids extra fields.
-- `write_file`: Preview-first workspace file modification requiring explicit confirmation. Strict schema `WriteFileArgs` forbids extra fields.
+- `search_symbols`: Performs symbol searches (classes, functions, methods, interfaces, types) across code files. Strict schema `SearchSymbolsArgs` forbids extra fields.
+- `list_files`: Lists workspace files matching glob patterns. Strict schema `ListFilesArgs` forbids extra fields.
+- `write_file`: Preview-first workspace file modification requiring explicit confirmation. Integrates with `CheckpointManager` to snapshot pre-change states. Strict schema `WriteFileArgs` forbids extra fields.
 - `run_command`: Execution of allowlisted development executables without a shell. Strict schema `RunCommandArgs` forbids extra fields.
 
 Every tool argument payload is validated against strict Pydantic schemas with `model_config = ConfigDict(extra="forbid")`. Unknown tools, malformed arguments, and unexpected fields are rejected immediately with structured error results and do not break the agent execution loop.
 
-### Execution policies
+### Execution policies and configuration
 
-Execution policies are governed by `ExecutionPolicy` (`backend/src/forge/agent/policy.py`):
+Execution policies are governed by `ExecutionPolicyConfig` (`backend/src/forge/agent/policy.py`):
 - `plan`: Read-only. File modifications and command executions are strictly prohibited and rejected before prompting for approval.
 - `normal`: Read operations are automatic; file writes and commands require interactive user approval.
-- `autonomous`: Only explicitly permitted actions are executed without interactive confirmation.
+- `autonomous`: Only explicitly permitted actions are executed without interactive confirmation. Disabled by default.
+
+Policy configuration is resolved hierarchically through `load_execution_policy_config`:
+1. Global configuration: `~/.forge/config.json`.
+2. Project configuration: `<workspace>/.forge/config.json`.
+3. CLI overrides: `--policy <plan|normal|autonomous>`, `--plan` (forces `plan` mode), and `--allow-tool <tool>` (explicit per-tool autonomous permissions).
+
+In `plan` mode, file modifications and commands are unconditionally blocked before approval callbacks, guaranteeing strict read-only safety regardless of configuration.
+
+### Checkpoints and rollback architecture
+
+`CheckpointManager` (`backend/src/forge/context/checkpoint.py`) tracks file states before and after task executions:
+- **Pre-change state recording**: Before any file is modified or created in a task, its original pre-change content and SHA-256 hash are recorded. Subsequent edits within the same task preserve the original baseline.
+- **Post-change verification**: Post-change hashes are recorded upon successful write.
+- **Conflict detection and safe rollback**: During rollback (`forge rollback` or `mgr.rollback(task_id)`), current file content is compared against the recorded post-change hash. If external changes occurred after the task, rollback flags a conflict and skips the file to ensure unrelated user edits are never overwritten. Unmodified task changes are safely reverted (deleting files created in the task and restoring modified files atomically).
+
+### Repository context and token budget selection
+
+`Workspace.discover_context` discovers root and nested `FORGE.md` and `AGENTS.md` instruction files throughout the repository hierarchy, sorting them so root guidelines take precedence. Context selection allocates explicit token budgets across instructions (~30%), repository file trees (~25%), and requested context files (~45%), fairly partitioning excerpts and strictly enforcing the overall token ceiling. `.gitignore` patterns and sensitive credential/key patterns are respected across all searches, listings, and reads.
 
 The CLI agent loop is opt-in through `forge -p "..." --agent`. It caps provider/tool cycles at 8 steps, issues native structured tool definitions to the provider, dispatches structured tool calls, and returns tool results to the provider in subsequent turns.
 When `--plan --agent` is invoked, the `plan` execution policy is enforced, guaranteeing that no file writes or command executions can occur.

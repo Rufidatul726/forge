@@ -2,6 +2,7 @@ import json
 import re
 from collections.abc import AsyncIterator, Callable, Mapping
 from pathlib import Path
+from uuid import uuid4
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -12,7 +13,7 @@ from forge.agent.registry import (
     ToolRegistry,
     create_default_registry,
 )
-from forge.context import Workspace
+from forge.context import CheckpointManager, Workspace
 from forge.context.workspace import WriteProposal
 from forge.execution import CommandProposal, CommandRunner
 from forge.providers import ModelProvider
@@ -80,6 +81,11 @@ class AgentService:
         self._provider = provider
         self._command_runner = command_runner or CommandRunner(workspace_root)
         self._registry = registry or create_default_registry()
+        self._checkpoint_manager = CheckpointManager(workspace_root)
+
+    @property
+    def checkpoint_manager(self) -> CheckpointManager:
+        return self._checkpoint_manager
 
     async def run_autonomous(
         self,
@@ -96,6 +102,7 @@ class AgentService:
 
         active_policy = policy_config or ExecutionPolicyConfig(policy=policy)
         context = self._build_context(task.context_paths)
+        task_id = task.session_id or uuid4().hex
 
         context_obj = ToolExecutionContext(
             workspace=self._workspace,
@@ -103,6 +110,8 @@ class AgentService:
             policy_config=active_policy,
             approve_write=approve_write,
             approve_command=approve_command,
+            checkpoint_manager=self._checkpoint_manager,
+            task_id=task_id,
         )
         dispatcher = ToolDispatcher(self._registry, context_obj)
 
@@ -308,20 +317,36 @@ class AgentService:
             return None
         return ToolCall(name=name, arguments=dict(arguments))
 
-    def _build_context(self, context_paths: list[str]) -> str:
+    def _build_context(self, context_paths: list[str], max_token_budget: int = 6000) -> str:
         discovered = self._workspace.discover_context(file_limit=200)
-        sections = [
-            "Workspace file list:\n" + "\n".join(discovered.files.paths),
-        ]
-        if discovered.instructions:
-            sections.append(f"Project instructions (FORGE.md):\n{discovered.instructions}")
+        char_budget = max_token_budget * 4
 
-        remaining = MAX_CONTEXT_CHARS - sum(len(section) for section in sections)
-        for path in context_paths:
-            if remaining <= 0:
-                break
-            content = self._workspace.read_text(path)
-            excerpt = content[: min(MAX_CONTEXT_FILE_CHARS, remaining)]
-            sections.append(f"File: {path}\n{excerpt}")
-            remaining -= len(sections[-1])
-        return "\n\n".join(sections)[:MAX_CONTEXT_CHARS]
+        sections: list[str] = []
+
+        # Instructions (root + nested)
+        if discovered.instructions:
+            inst_budget = int(char_budget * 0.3)
+            inst_text = discovered.instructions[:inst_budget]
+            sections.append(f"Project instructions:\n{inst_text}")
+
+        # Workspace file list
+        files_budget = int(char_budget * 0.25)
+        files_text = "\n".join(discovered.files.paths)[:files_budget]
+        sections.append(f"Workspace file list:\n{files_text}")
+
+        # Remaining budget for context files
+        used_chars = sum(len(s) for s in sections)
+        remaining_chars = max(0, char_budget - used_chars)
+
+        if context_paths and remaining_chars > 0:
+            per_file_chars = max(500, remaining_chars // len(context_paths))
+            for path in context_paths:
+                if remaining_chars <= 0:
+                    break
+                content = self._workspace.read_text(path)
+                take_chars = min(per_file_chars, len(content), remaining_chars)
+                excerpt = content[:take_chars]
+                sections.append(f"File: {path}\n{excerpt}")
+                remaining_chars -= len(sections[-1])
+
+        return "\n\n".join(sections)[:char_budget]

@@ -588,3 +588,226 @@ def test_openrouter_generate_with_tools_and_tool_call_response():
     assert result.tool_calls[0].name == "read_file"
     assert result.tool_calls[0].arguments == {"path": "README.md"}
 
+
+def test_gemini_streaming_structured_tool_calls():
+    from forge.providers.models import ToolDefinition
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        data = json.loads(request.content)
+        assert "tools" in data
+        assert data["tools"][0]["functionDeclarations"][0]["name"] == "read_file"
+        sse_lines = [
+            'data: {"candidates": [{"content": {"role": "model", "parts": [{"text": "I will read the file."}]}}]}\n\n',
+            'data: {"candidates": [{"content": {"role": "model", "parts": [{"functionCall": {"name": "read_file", "args": {"path": "main.py"}}}]}}]}\n\n',
+        ]
+        return httpx.Response(200, content="".join(sse_lines).encode("utf-8"))
+
+    async def collect():
+        chunks = []
+        async for chunk in gemini_provider(respond).stream_generate(
+            GenerationRequest(
+                model="gemini-2.5-pro",
+                messages=[ChatMessage(role="user", content="Read main.py")],
+                tools=[
+                    ToolDefinition(
+                        name="read_file",
+                        description="Read file",
+                        parameters={"type": "object", "properties": {"path": {"type": "string"}}},
+                    )
+                ],
+            )
+        ):
+            chunks.append(chunk)
+        return chunks
+
+    chunks = asyncio.run(collect())
+    assert len(chunks) == 3  # text chunk, tool call chunk, terminal done chunk
+    assert chunks[0].content == "I will read the file."
+    assert not chunks[0].tool_calls
+    assert len(chunks[1].tool_calls) == 1
+    assert chunks[1].tool_calls[0].name == "read_file"
+    assert chunks[1].tool_calls[0].arguments == {"path": "main.py"}
+    assert chunks[2].done is True
+
+
+def test_ollama_streaming_structured_tool_calls():
+    from forge.providers.models import ToolDefinition
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        data = json.loads(request.content)
+        assert "tools" in data
+        lines = [
+            json.dumps({
+                "model": "qwen2.5-coder:7b",
+                "message": {"role": "assistant", "content": "Checking...", "tool_calls": []},
+                "done": False,
+            }) + "\n",
+            json.dumps({
+                "model": "qwen2.5-coder:7b",
+                "message": {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "tc-123",
+                            "function": {"name": "search_text", "arguments": {"query": "hello"}},
+                        }
+                    ],
+                },
+                "done": True,
+            }) + "\n",
+        ]
+        return httpx.Response(200, content="".join(lines).encode("utf-8"))
+
+    async def collect():
+        chunks = []
+        async for chunk in provider(respond).stream_generate(
+            GenerationRequest(
+                model="qwen2.5-coder:7b",
+                messages=[ChatMessage(role="user", content="Find hello")],
+                tools=[
+                    ToolDefinition(
+                        name="search_text",
+                        description="Search text",
+                        parameters={"type": "object", "properties": {"query": {"type": "string"}}},
+                    )
+                ],
+            )
+        ):
+            chunks.append(chunk)
+        return chunks
+
+    chunks = asyncio.run(collect())
+    assert len(chunks) == 2
+    assert chunks[0].content == "Checking..."
+    assert chunks[1].done is True
+    assert len(chunks[1].tool_calls) == 1
+    assert chunks[1].tool_calls[0].name == "search_text"
+    assert chunks[1].tool_calls[0].arguments == {"query": "hello"}
+
+
+def test_openrouter_streaming_structured_tool_calls():
+    from forge.providers.models import ToolDefinition
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        data = json.loads(request.content)
+        assert "tools" in data
+        sse_lines = [
+            'data: {"choices": [{"delta": {"content": "Inspecting..."}}], "model": "qwen/qwen3-coder"}\n\n',
+            'data: {"choices": [{"delta": {"tool_calls": [{"id": "or_tc_1", "function": {"name": "read_file", "arguments": "{\\"path\\": \\"config.py\\"}"}}]}}], "model": "qwen/qwen3-coder"}\n\n',
+            "data: [DONE]\n\n",
+        ]
+        return httpx.Response(200, content="".join(sse_lines).encode("utf-8"))
+
+    async def collect():
+        chunks = []
+        async for chunk in openrouter_provider(respond).stream_generate(
+            GenerationRequest(
+                model="qwen/qwen3-coder",
+                messages=[ChatMessage(role="user", content="Read config")],
+                tools=[
+                    ToolDefinition(
+                        name="read_file",
+                        description="Read file",
+                        parameters={"type": "object", "properties": {"path": {"type": "string"}}},
+                    )
+                ],
+            )
+        ):
+            chunks.append(chunk)
+        return chunks
+
+    chunks = asyncio.run(collect())
+    assert len(chunks) == 3
+    assert chunks[0].content == "Inspecting..."
+    assert len(chunks[1].tool_calls) == 1
+    assert chunks[1].tool_calls[0].name == "read_file"
+    assert chunks[1].tool_calls[0].arguments == {"path": "config.py"}
+    assert chunks[2].done is True
+
+
+def test_provider_safe_handling_of_malformed_tool_call_payloads():
+    from forge.providers.models import ToolDefinition
+
+    # OpenRouter with malformed JSON string in arguments should safely preserve raw arguments rather than crash
+    def openrouter_malformed(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "model": "qwen/qwen3-coder",
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": "Using tool",
+                            "tool_calls": [
+                                {
+                                    "id": "bad_call_1",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "read_file",
+                                        "arguments": "{malformed json}",
+                                    },
+                                },
+                                {
+                                    # Missing function name - should be safely skipped
+                                    "id": "bad_call_2",
+                                    "type": "function",
+                                    "function": {"name": "", "arguments": "{}"},
+                                },
+                            ],
+                        }
+                    }
+                ],
+            },
+        )
+
+    res = asyncio.run(
+        openrouter_provider(openrouter_malformed).generate(
+            GenerationRequest(
+                model="qwen/qwen3-coder",
+                messages=[ChatMessage(role="user", content="test")],
+            )
+        )
+    )
+    assert len(res.tool_calls) == 1
+    assert res.tool_calls[0].name == "read_file"
+    assert "_raw_malformed_arguments" in res.tool_calls[0].arguments
+
+    # Ollama with malformed arguments and missing name
+    def ollama_malformed(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "model": "qwen2.5-coder:7b",
+                "done": True,
+                "message": {
+                    "role": "assistant",
+                    "content": "Doing work",
+                    "tool_calls": [
+                        {
+                            "id": "bad_ollama_1",
+                            "function": {"name": "write_file", "arguments": "{invalid json}"},
+                        },
+                        {
+                            "id": "bad_ollama_2",
+                            "function": {"name": None},
+                        },
+                    ],
+                },
+            },
+        )
+
+    res_ollama = asyncio.run(
+        provider(ollama_malformed).generate(
+            GenerationRequest(
+                model="qwen2.5-coder:7b",
+                messages=[ChatMessage(role="user", content="test")],
+            )
+        )
+    )
+    assert len(res_ollama.tool_calls) == 1
+    assert res_ollama.tool_calls[0].name == "write_file"
+    assert "_raw_malformed_arguments" in res_ollama.tool_calls[0].arguments
+
+

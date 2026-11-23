@@ -1,4 +1,5 @@
 import difflib
+import fnmatch
 import hashlib
 import logging
 import os
@@ -139,10 +140,27 @@ class SearchResults:
 
 
 @dataclass(frozen=True)
+class SymbolMatch:
+    name: str
+    kind: str
+    path: str
+    line_number: int
+    line: str
+
+
+@dataclass(frozen=True)
+class SymbolSearchResults:
+    matches: list[SymbolMatch]
+    files_scanned: int
+    truncated: bool = False
+
+
+@dataclass(frozen=True)
 class WorkspaceContext:
     root: Path
     instructions: str | None
     files: FileList
+    all_instructions: dict[str, str] = field(default_factory=dict)
 
 
 class Workspace:
@@ -167,6 +185,20 @@ class Workspace:
         self.root = resolved_root
         self.max_file_bytes = max_file_bytes
         self.max_files_scanned = max_files_scanned
+        self._gitignore_patterns = self._load_gitignore()
+
+    def _load_gitignore(self) -> list[str]:
+        gi = self.root / ".gitignore"
+        patterns: list[str] = []
+        if gi.is_file():
+            try:
+                for line in gi.read_text(encoding="utf-8").splitlines():
+                    line = line.strip()
+                    if line and not line.startswith("#"):
+                        patterns.append(line)
+            except Exception:
+                pass
+        return patterns
 
     def read_text(self, relative_path: str | Path) -> str:
         path = self._resolve_file(relative_path)
@@ -438,15 +470,127 @@ class Workspace:
             truncated=truncated,
         )
 
+    def discover_instructions(self) -> dict[str, str]:
+        """Find root and nested FORGE.md and AGENTS.md files."""
+        instructions_map: dict[str, str] = {}
+        target_names = {"forge.md", "agents.md"}
+
+        try:
+            for path in sorted(self.root.rglob("*.md")):
+                if path.is_file() and path.name.lower() in target_names:
+                    try:
+                        relative = path.relative_to(self.root)
+                        if not self._is_excluded(relative):
+                            text = self.read_text(relative)
+                            if text.strip():
+                                instructions_map[relative.as_posix()] = text
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+
+        sorted_keys = sorted(
+            instructions_map.keys(),
+            key=lambda k: (k.count("/"), 0 if "forge" in k.lower() else 1, k),
+        )
+        return {k: instructions_map[k] for k in sorted_keys}
+
     def discover_context(self, *, file_limit: int = 200) -> WorkspaceContext:
-        instructions_path = self.root / "FORGE.md"
-        instructions: str | None = None
-        if instructions_path.exists():
-            instructions = self.read_text("FORGE.md")
+        all_inst = self.discover_instructions()
+        combined_instructions: str | None = None
+        if len(all_inst) == 1 and "FORGE.md" in all_inst:
+            combined_instructions = all_inst["FORGE.md"]
+        elif all_inst:
+            sections = []
+            for path, text in all_inst.items():
+                sections.append(f"# Instructions ({path}):\n{text}")
+            combined_instructions = "\n\n".join(sections)
         return WorkspaceContext(
             root=self.root,
-            instructions=instructions,
+            instructions=combined_instructions,
             files=self.list_files(limit=file_limit),
+            all_instructions=all_inst,
+        )
+
+    def search_symbols(
+        self,
+        query: str,
+        *,
+        pattern: str = "**/*",
+        limit: int = 50,
+    ) -> SymbolSearchResults:
+        if limit <= 0 or limit > MAX_SEARCH_LIMIT:
+            raise ValueError(f"Limit must be between 1 and {MAX_SEARCH_LIMIT}")
+        self._validate_pattern(pattern)
+
+        code_extensions = {
+            ".py", ".js", ".jsx", ".ts", ".tsx", ".rs", ".go",
+            ".rb", ".java", ".c", ".cpp", ".h", ".hpp", ".cs",
+        }
+        symbol_patterns = [
+            (re.compile(r"^\s*(?:async\s+def|def)\s+([a-zA-Z_][a-zA-Z0-9_]*)"), "function"),
+            (re.compile(r"^\s*class\s+([a-zA-Z_][a-zA-Z0-9_]*)"), "class"),
+            (re.compile(r"^\s*(?:export\s+)?(?:async\s+)?function\*?\s+([a-zA-Z_$][a-zA-Z0-9_$]*)"), "function"),
+            (re.compile(r"^\s*(?:export\s+)?class\s+([a-zA-Z_$][a-zA-Z0-9_$]*)"), "class"),
+            (re.compile(r"^\s*(?:export\s+)?interface\s+([a-zA-Z_$][a-zA-Z0-9_$]*)"), "interface"),
+            (re.compile(r"^\s*(?:export\s+)?type\s+([a-zA-Z_$][a-zA-Z0-9_$]*)\s*="), "type"),
+            (re.compile(r"^\s*(?:export\s+)?(?:const|let|var)\s+([a-zA-Z_$][a-zA-Z0-9_$]*)\s*[:=]"), "variable"),
+        ]
+
+        matches: list[SymbolMatch] = []
+        files_scanned = 0
+        truncated = False
+        needle = query.casefold()
+
+        try:
+            for path in sorted(self.root.glob(pattern)):
+                if not path.is_file():
+                    continue
+                if path.suffix.lower() not in code_extensions:
+                    continue
+                try:
+                    relative = path.relative_to(self.root)
+                except ValueError:
+                    continue
+                if self._is_excluded(relative):
+                    continue
+
+                try:
+                    text = self.read_text(relative)
+                except (WorkspaceError, OSError):
+                    continue
+
+                files_scanned += 1
+                for line_idx, line in enumerate(text.splitlines(), start=1):
+                    for regex, kind in symbol_patterns:
+                        m = regex.match(line)
+                        if m:
+                            sym_name = m.group(1)
+                            if needle in sym_name.casefold():
+                                matches.append(
+                                    SymbolMatch(
+                                        name=sym_name,
+                                        kind=kind,
+                                        path=relative.as_posix(),
+                                        line_number=line_idx,
+                                        line=line.strip()[:200],
+                                    )
+                                )
+                                if len(matches) >= limit:
+                                    truncated = True
+                                    break
+                            break
+                    if truncated:
+                        break
+                if truncated:
+                    break
+        except (OSError, ValueError) as exc:
+            raise WorkspacePathError("Symbol search failed") from exc
+
+        return SymbolSearchResults(
+            matches=matches,
+            files_scanned=files_scanned,
+            truncated=truncated,
         )
 
     def _resolve_file(self, relative_path: str | Path) -> Path:
@@ -575,9 +719,17 @@ class Workspace:
             raise WorkspacePathError("Workspace path must be a relative path inside the workspace")
         return path
 
-    @staticmethod
-    def _is_excluded(relative: Path) -> bool:
-        parts = [part.casefold() for part in relative.parts]
+    def _is_excluded(self_or_relative: Any, relative: Path | None = None) -> bool:
+        if isinstance(self_or_relative, Workspace):
+            actual_rel = relative
+            patterns = getattr(self_or_relative, "_gitignore_patterns", [])
+        else:
+            actual_rel = self_or_relative
+            patterns = []
+        if actual_rel is None:
+            return False
+
+        parts = [part.casefold() for part in actual_rel.parts]
         if any(part in _IGNORED_DIRECTORIES or part in _SENSITIVE_DIRECTORIES for part in parts):
             return True
 
@@ -589,4 +741,21 @@ class Workspace:
         tokens = re.split(r"[^a-z0-9]+", filename)
         if any(token in {"credential", "credentials", "secret", "secrets"} for token in tokens):
             return True
-        return Path(filename).suffix.casefold() in _SENSITIVE_SUFFIXES
+        if Path(filename).suffix.casefold() in _SENSITIVE_SUFFIXES:
+            return True
+
+        if patterns:
+            rel_posix = actual_rel.as_posix()
+            for pat in patterns:
+                pat_clean = pat.rstrip("/")
+                if (
+                    fnmatch.fnmatch(actual_rel.name, pat_clean)
+                    or fnmatch.fnmatch(rel_posix, pat_clean)
+                    or fnmatch.fnmatch(rel_posix, f"*/{pat_clean}/*")
+                ):
+                    return True
+                for part in actual_rel.parts:
+                    if fnmatch.fnmatch(part, pat_clean):
+                        return True
+
+        return False

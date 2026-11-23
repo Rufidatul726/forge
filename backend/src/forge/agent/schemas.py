@@ -70,3 +70,42 @@ class RunCommandArgs(BaseModel):
         le=300.0,
         description="Maximum execution timeout in seconds.",
     )
+
+
+class SearchSymbolsArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    query: str = Field(
+        min_length=1,
+        max_length=255,
+        description="Symbol name substring to search for (function, class, method, etc.).",
+    )
+    pattern: str = Field(
+        default="**/*",
+        min_length=1,
+        max_length=255,
+        description="Glob pattern to filter code files.",
+    )
+    limit: int = Field(
+        default=50,
+        gt=0,
+        le=500,
+        description="Maximum number of symbol matches to return.",
+    )
+
+
+class ListFilesArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    pattern: str = Field(
+        default="**/*",
+        min_length=1,
+        max_length=255,
+        description="Glob pattern to filter file paths.",
+    )
+    limit: int = Field(
+        default=100,
+        gt=0,
+        le=1000,
+        description="Maximum number of files to return.",
+    )

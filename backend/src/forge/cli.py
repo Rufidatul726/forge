@@ -9,9 +9,20 @@ from rich.table import Table
 from rich.text import Text
 
 from forge.config import ForgeSettings, forge_directory, instructions_path
-from forge.context import Workspace, WorkspaceError, WriteProposal
+from forge.context import (
+    CheckpointManager,
+    Workspace,
+    WorkspaceError,
+    WriteProposal,
+)
 from forge.execution import CommandError, CommandProposal, CommandRunner
-from forge.agent import AgentService, AgentTaskRequest, ExecutionPolicy
+from forge.agent import (
+    AgentService,
+    AgentTaskRequest,
+    ExecutionPolicy,
+    ExecutionPolicyConfig,
+    load_execution_policy_config,
+)
 from forge.providers import ProviderError, get_provider
 from forge.providers.models import ChatMessage
 from forge.sessions import SessionNotFoundError, SessionStore
@@ -44,12 +55,33 @@ def main(
     continue_session: bool = typer.Option(False, "--continue", help="Resume the previous session."),
     agent: bool = typer.Option(False, "--agent", help="Allow a bounded tool loop with per-action approval."),
     policy: str | None = typer.Option(None, "--policy", help="Execution policy: plan, normal, or autonomous."),
+    allow_tool: list[str] | None = typer.Option(None, "--allow-tool", help="Allow specific tool autonomously without interactive prompt."),
+    rollback: str | None = typer.Option(None, "--rollback", help="Rollback changes made in a specific task/checkpoint ID."),
 ) -> None:
     if ctx.invoked_subcommand is not None:
         return
 
     workspace = Path(".")
     root = resolve_workspace(workspace)
+
+    if rollback is not None:
+        mgr = CheckpointManager(root)
+        target_id = rollback.strip()
+        if not target_id:
+            cps = mgr.list_checkpoints()
+            if not cps:
+                console.print("[yellow]No checkpoints recorded to rollback.[/]")
+                return
+            target_id = cps[0].task_id
+        res = mgr.rollback(target_id)
+        if res.restored:
+            console.print(f"[green]Successfully restored {len(res.restored)} file(s):[/] {', '.join(res.restored)}")
+        if res.conflicts:
+            console.print(f"[red]Conflicting external changes detected for {len(res.conflicts)} file(s) (not overwritten):[/] {', '.join(res.conflicts)}")
+        if not res.restored and not res.conflicts:
+            console.print(f"[yellow]No files needed restoration for checkpoint {target_id}.[/]")
+        return
+
     settings = ForgeSettings()
     if model:
         settings.default_model = model
@@ -65,6 +97,12 @@ def main(
             )
     elif plan:
         exec_policy = ExecutionPolicy.PLAN
+
+    policy_config = load_execution_policy_config(
+        workspace_root=root,
+        cli_policy=exec_policy if (policy is not None or plan) else None,
+        cli_allowed_tools=allow_tool,
+    )
 
     if prompt:
         console.print(
@@ -140,7 +178,8 @@ def main(
                         task,
                         approve_write=approve_write,
                         approve_command=approve_command,
-                        policy=exec_policy,
+                        policy=policy_config.policy,
+                        policy_config=policy_config,
                     )
                 )
             else:
@@ -524,3 +563,71 @@ def diff(workspace: Path = typer.Argument(Path("."), help="Repository to inspect
         console.print(output)
     else:
         console.print("[dim]No unstaged changes.[/] ")
+
+
+@app.command("symbols")
+def symbols_command(
+    query: str = typer.Argument(..., help="Symbol query to search for."),
+    pattern: str = typer.Option("**/*", "--pattern", help="Glob pattern to filter code files."),
+    limit: int = typer.Option(50, "--limit", help="Maximum number of matches."),
+    workspace: Path = typer.Option(Path("."), "-w", "--workspace", help="Path to workspace root."),
+) -> None:
+    root = resolve_workspace(workspace)
+    ws = Workspace(root)
+    try:
+        results = ws.search_symbols(query, pattern=pattern, limit=limit)
+        if not results.matches:
+            console.print("[dim]No matching symbols found.[/]")
+            return
+        table = Table(title=f"Symbols matching '{query}'")
+        table.add_column("Kind", style="cyan")
+        table.add_column("Name", style="bold green")
+        table.add_column("Location", style="yellow")
+        table.add_column("Line", style="dim")
+        for m in results.matches:
+            table.add_row(m.kind, m.name, f"{m.path}:{m.line_number}", m.line)
+        console.print(table)
+    except WorkspaceError as error:
+        console.print(f"[red]Symbol search error:[/] {getattr(error, 'public_message', str(error))}")
+        raise typer.Exit(code=1) from error
+
+
+@app.command("checkpoints")
+def checkpoints_command(
+    workspace: Path = typer.Option(Path("."), "-w", "--workspace", help="Path to workspace root."),
+) -> None:
+    root = resolve_workspace(workspace)
+    mgr = CheckpointManager(root)
+    cps = mgr.list_checkpoints()
+    if not cps:
+        console.print("[dim]No checkpoints recorded in this workspace.[/]")
+        return
+    table = Table(title="Workspace Checkpoints")
+    table.add_column("Task ID", style="bold cyan")
+    table.add_column("Files Modified", style="green")
+    for cp in cps:
+        table.add_row(cp.task_id, ", ".join(cp.snapshots.keys()))
+    console.print(table)
+
+
+@app.command("rollback")
+def rollback_command(
+    task_id: str | None = typer.Argument(None, help="Task ID to rollback. If omitted, rolls back the most recent checkpoint."),
+    workspace: Path = typer.Option(Path("."), "-w", "--workspace", help="Path to workspace root."),
+) -> None:
+    root = resolve_workspace(workspace)
+    mgr = CheckpointManager(root)
+    target_id = task_id
+    if not target_id:
+        cps = mgr.list_checkpoints()
+        if not cps:
+            console.print("[yellow]No checkpoints recorded to rollback.[/]")
+            return
+        target_id = cps[0].task_id
+    res = mgr.rollback(target_id)
+    if res.restored:
+        console.print(f"[green]Successfully restored {len(res.restored)} file(s):[/] {', '.join(res.restored)}")
+    if res.conflicts:
+        console.print(f"[red]Conflicting external changes detected for {len(res.conflicts)} file(s) (not overwritten):[/] {', '.join(res.conflicts)}")
+    if not res.restored and not res.conflicts:
+        console.print(f"[yellow]No files needed restoration for checkpoint {target_id}.[/]")

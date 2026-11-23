@@ -86,11 +86,22 @@ uv run --project backend forge --help
 uv run --project backend forge files .
 uv run --project backend forge read README.md
 uv run --project backend forge search "TODO"
+uv run --project backend forge symbols "Calculator"
 uv run --project backend forge write src/example.py --content "print('hello')"
 uv run --project backend forge run --workspace . -- python --version
+uv run --project backend forge diff .
+uv run --project backend forge checkpoints
+uv run --project backend forge rollback
 ```
 
-Workspace file operations reject absolute paths, parent traversal, escaped symlinks, sensitive files, and common generated directories. Reads and writes are capped at 1 MiB per file; searches also cap candidate files and result lines. `forge write` previews a diff and asks for confirmation before replacing or creating one file. It does not create parent directories. Add `--session <32-character-id>` to attach a hash-only `workspace_write` outcome to an existing session after approval. Avoid putting secrets in `--content`, which can be retained in shell history. Use a narrower `--pattern` for large repositories.
+Workspace file operations reject absolute paths, parent traversal, escaped symlinks, sensitive files, and common generated directories. Reads and writes are capped at 1 MiB per file; searches also cap candidate files and result lines. `forge write` previews a diff and asks for confirmation before replacing or creating one file. It snapshots pre-change file states via `CheckpointManager` so tasks can be safely rolled back using `forge rollback`. Rollback detects conflicts when files were modified after the task and will never overwrite unrelated user edits.
+
+`forge symbols` scans code files across the repository extracting functions, classes, methods, and interfaces without external language servers.
+
+`forge -p "..." --agent` enables the autonomous coding agent loop:
+- In `normal` mode (default), read operations execute automatically while writes and allowlisted commands require interactive user confirmation.
+- In `plan` mode (`--plan --agent` or `--policy plan`), read-only actions are permitted and mutations or commands are strictly blocked by policy.
+- In `autonomous` mode (`--policy autonomous`), actions in `--allow-tool` or configured in `~/.forge/config.json` / `.forge/config.json` run without prompting. Autonomous permissions are disabled by default.
 
 `forge run` permits only `git`, `npm`, `node`, `python`, `python3`, `pytest`, `ruff`, and `uv`. Pass `--` before the command to separate Forge options from the command arguments. Forge previews the resolved executable and full argument vector, then asks for per-command approval with a default of no. The process runs without a shell, is limited to 300 seconds and 1 MiB of captured output per stream by default, and receives only an environment-variable allowlist. Cancellation and timeout cleanup use process groups on POSIX and `taskkill /T /F` on Windows, with a parent-process fallback. These controls are not an OS sandbox; approved programs run as your current user and may access resources available to that account. The command runner is not available through the API.
 

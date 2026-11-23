@@ -130,7 +130,9 @@ class GeminiProvider(_CloudProvider):
             names.append(model)
         return names
 
-    async def generate(self, request: GenerationRequest) -> ProviderResponse:
+    def _format_gemini_contents(
+        self, request: GenerationRequest
+    ) -> tuple[list[dict[str, Any]], list[dict[str, str]], list[dict[str, Any]] | None]:
         contents: list[dict[str, Any]] = []
         system_parts: list[dict[str, str]] = []
         for message in request.messages:
@@ -157,13 +159,7 @@ class GeminiProvider(_CloudProvider):
                 contents.append(
                     {"role": "model" if message.role == "assistant" else "user", "parts": [{"text": message.content}]}
                 )
-
-        payload: dict[str, Any] = {
-            "contents": contents,
-            "generationConfig": {"maxOutputTokens": request.max_tokens},
-        }
-        if system_parts:
-            payload["systemInstruction"] = {"parts": system_parts}
+        tools = None
         if request.tools:
             function_declarations = [
                 {
@@ -173,7 +169,19 @@ class GeminiProvider(_CloudProvider):
                 }
                 for tool in request.tools
             ]
-            payload["tools"] = [{"functionDeclarations": function_declarations}]
+            tools = [{"functionDeclarations": function_declarations}]
+        return contents, system_parts, tools
+
+    async def generate(self, request: GenerationRequest) -> ProviderResponse:
+        contents, system_parts, tools = self._format_gemini_contents(request)
+        payload: dict[str, Any] = {
+            "contents": contents,
+            "generationConfig": {"maxOutputTokens": request.max_tokens},
+        }
+        if system_parts:
+            payload["systemInstruction"] = {"parts": system_parts}
+        if tools:
+            payload["tools"] = tools
 
         response = await self._request_json(
             "POST",
@@ -230,23 +238,15 @@ class GeminiProvider(_CloudProvider):
     async def stream_generate(
         self, request: GenerationRequest
     ) -> AsyncIterator[GenerationChunk]:
-        contents: list[dict[str, Any]] = []
-        system_parts: list[dict[str, str]] = []
-        for message in request.messages:
-            part = {"text": message.content}
-            if message.role == "system":
-                system_parts.append(part)
-            else:
-                contents.append(
-                    {"role": "model" if message.role == "assistant" else "user", "parts": [part]}
-                )
-
+        contents, system_parts, tools = self._format_gemini_contents(request)
         payload: dict[str, Any] = {
             "contents": contents,
             "generationConfig": {"maxOutputTokens": request.max_tokens},
         }
         if system_parts:
             payload["systemInstruction"] = {"parts": system_parts}
+        if tools:
+            payload["tools"] = tools
 
         try:
             async with httpx.AsyncClient(
@@ -292,16 +292,30 @@ class GeminiProvider(_CloudProvider):
                                 if isinstance(content, Mapping):
                                     parts = content.get("parts")
                                     if isinstance(parts, list):
-                                        text = "".join(
-                                            p.get("text", "")
-                                             for p in parts
-                                            if isinstance(p, Mapping)
-                                        )
-                                        if text:
+                                        text_parts: list[str] = []
+                                        chunk_tool_calls: list[ToolCall] = []
+                                        for p in parts:
+                                            if not isinstance(p, Mapping):
+                                                continue
+                                            if "text" in p and isinstance(p["text"], str):
+                                                text_parts.append(p["text"])
+                                            if "functionCall" in p and isinstance(p["functionCall"], Mapping):
+                                                fc = p["functionCall"]
+                                                fn_name = fc.get("name")
+                                                if isinstance(fn_name, str) and fn_name:
+                                                    fn_args = fc.get("args") or {}
+                                                    if not isinstance(fn_args, Mapping):
+                                                        fn_args = {}
+                                                    chunk_tool_calls.append(
+                                                        ToolCall(id=uuid4().hex, name=fn_name, arguments=dict(fn_args))
+                                                    )
+                                        text = "".join(text_parts)
+                                        if text or chunk_tool_calls:
                                             yield GenerationChunk(
                                                 content=text,
                                                 done=False,
                                                 model=request.model,
+                                                tool_calls=chunk_tool_calls,
                                             )
                     yield GenerationChunk(content="", done=True, model=request.model)
         except httpx.TimeoutException as exc:
@@ -336,7 +350,9 @@ class OpenRouterProvider(_CloudProvider):
             names.append(name.strip())
         return names
 
-    async def generate(self, request: GenerationRequest) -> ProviderResponse:
+    def _format_openrouter_payload(
+        self, request: GenerationRequest, *, stream: bool
+    ) -> dict[str, Any]:
         messages_payload: list[dict[str, Any]] = []
         for message in request.messages:
             if message.role == "tool":
@@ -371,7 +387,7 @@ class OpenRouterProvider(_CloudProvider):
             "model": request.model,
             "messages": messages_payload,
             "max_tokens": request.max_tokens,
-            "stream": False,
+            "stream": stream,
         }
         if request.tools:
             payload["tools"] = [
@@ -385,6 +401,10 @@ class OpenRouterProvider(_CloudProvider):
                 }
                 for tool in request.tools
             ]
+        return payload
+
+    async def generate(self, request: GenerationRequest) -> ProviderResponse:
+        payload = self._format_openrouter_payload(request, stream=False)
 
         response = await self._request_json(
             "POST",
@@ -409,21 +429,21 @@ class OpenRouterProvider(_CloudProvider):
         if isinstance(raw_tool_calls, list):
             for raw_call in raw_tool_calls:
                 if not isinstance(raw_call, Mapping):
-                    raise ProviderResponseError
+                    continue
                 fn = raw_call.get("function")
                 if not isinstance(fn, Mapping):
-                    raise ProviderResponseError
+                    continue
                 fn_name = fn.get("name")
                 if not isinstance(fn_name, str) or not fn_name:
-                    raise ProviderResponseError
+                    continue
                 fn_args = fn.get("arguments", {})
                 if isinstance(fn_args, str):
                     try:
                         fn_args = json.loads(fn_args)
-                    except json.JSONDecodeError as exc:
-                        raise ProviderResponseError from exc
+                    except json.JSONDecodeError:
+                        fn_args = {"_raw_malformed_arguments": fn.get("arguments")}
                 if not isinstance(fn_args, Mapping):
-                    raise ProviderResponseError
+                    fn_args = {"_raw_arguments": str(fn_args)}
                 call_id = raw_call.get("id") or uuid4().hex
                 tool_calls.append(ToolCall(id=str(call_id), name=fn_name, arguments=dict(fn_args)))
 
@@ -446,12 +466,7 @@ class OpenRouterProvider(_CloudProvider):
     async def stream_generate(
         self, request: GenerationRequest
     ) -> AsyncIterator[GenerationChunk]:
-        payload = {
-            "model": request.model,
-            "messages": [message.model_dump(exclude_none=True) for message in request.messages],
-            "max_tokens": request.max_tokens,
-            "stream": True,
-        }
+        payload = self._format_openrouter_payload(request, stream=True)
         try:
             async with httpx.AsyncClient(
                 base_url=self._base_url,
@@ -494,12 +509,37 @@ class OpenRouterProvider(_CloudProvider):
                             if isinstance(choice, Mapping):
                                 delta = choice.get("delta")
                                 if isinstance(delta, Mapping):
-                                    text = delta.get("content")
-                                    if isinstance(text, str) and text:
+                                    text = delta.get("content") or ""
+                                    chunk_tool_calls: list[ToolCall] = []
+                                    raw_tool_calls = delta.get("tool_calls")
+                                    if isinstance(raw_tool_calls, list):
+                                        for raw_call in raw_tool_calls:
+                                            if not isinstance(raw_call, Mapping):
+                                                continue
+                                            fn = raw_call.get("function")
+                                            if not isinstance(fn, Mapping):
+                                                continue
+                                            fn_name = fn.get("name")
+                                            if not isinstance(fn_name, str) or not fn_name:
+                                                continue
+                                            fn_args = fn.get("arguments", {})
+                                            if isinstance(fn_args, str):
+                                                try:
+                                                    fn_args = json.loads(fn_args)
+                                                except json.JSONDecodeError:
+                                                    fn_args = {"_raw_malformed_arguments": fn.get("arguments")}
+                                            if not isinstance(fn_args, Mapping):
+                                                fn_args = {"_raw_arguments": str(fn_args)}
+                                            call_id = raw_call.get("id") or uuid4().hex
+                                            chunk_tool_calls.append(
+                                                ToolCall(id=str(call_id), name=fn_name, arguments=dict(fn_args))
+                                            )
+                                    if text or chunk_tool_calls:
                                         yield GenerationChunk(
                                             content=text,
                                             done=False,
                                             model=data.get("model", request.model),
+                                            tool_calls=chunk_tool_calls,
                                         )
                     yield GenerationChunk(content="", done=True, model=request.model)
         except httpx.TimeoutException as exc:

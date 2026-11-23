@@ -86,25 +86,30 @@ uv run --project backend forge models
 uv run --project backend forge files .
 uv run --project backend forge read README.md
 uv run --project backend forge search "TODO"
+uv run --project backend forge symbols "User"
 uv run --project backend forge write src/example.py --content "print('hello')"
 uv run --project backend forge run --workspace . -- python --version
 uv run --project backend forge diff .
+uv run --project backend forge checkpoints
+uv run --project backend forge rollback
 ```
 
 `forge models` checks configured providers and lists available models. Set `OLLAMA_HOST` in `backend/.env.local` if Ollama is not using its default local address.
 
-`forge files`, `forge read`, and `forge search` provide bounded access to the selected workspace. `forge write` shows a diff and requires explicit confirmation before atomically creating or replacing a file. It refuses sensitive paths, symlinks, parent traversal, and paths outside the workspace. Pass `--session <32-character-id>` to record approved, hash-only workspace change metadata in an existing session. Do not pass secrets as command-line content because shells may retain command history.
+`forge files`, `forge read`, and `forge search` provide bounded access to the selected workspace. `forge symbols` performs symbol discovery for functions, classes, methods, and interfaces across code files. `forge write` shows a diff and requires explicit confirmation before atomically creating or replacing a file. It refuses sensitive paths, symlinks, parent traversal, and paths outside the workspace. Pass `--session <32-character-id>` to record approved, hash-only workspace change metadata in an existing session. Do not pass secrets as command-line content because shells may retain command history.
+
+`forge checkpoints` and `forge rollback` track file modifications per task and provide safe rollbacks. Rollback inspects current file hashes against post-change states and will never overwrite unrelated changes made by the user.
 
 `forge run` allows only `git`, `npm`, `node`, `python`, `python3`, `pytest`, `ruff`, and `uv`. It displays the resolved executable, exact arguments, working directory, and timeout, then requires confirmation (default: no) for each invocation. It does not invoke a shell; execution has a timeout and bounded output, and only a small environment-variable allowlist is inherited. This is an approval gate, not an OS sandbox: an approved program runs as the current user and can access resources permitted to that account.
 
-Ollama, Gemini, and OpenRouter support bounded text generation, native structured tool calling, and real-time streaming through the backend provider interface and authenticated API. Set `DEFAULT_MODEL` to `ollama`, `gemini`, or `openrouter` to select the generation provider. `POST /api/v1/agent/tasks/stream` streams responses via Server-Sent Events, and the web UI supports real-time streaming responses with typing indicators. `forge -p ...` runs a bounded, read-only repository task and persists it to a local session.
+Ollama, Gemini, and OpenRouter support bounded text generation, native structured tool calling (including streaming structured tool calls), and real-time streaming through the backend provider interface and authenticated API. Set `DEFAULT_MODEL` to `ollama`, `gemini`, or `openrouter` to select the generation provider. `POST /api/v1/agent/tasks/stream` streams responses via Server-Sent Events, and the web UI supports real-time streaming responses with typing indicators. `forge -p ...` runs a bounded, read-only repository task and persists it to a local session.
 
 Add `--agent` to enable a bounded CLI tool loop with native structured tool calling:
-- **Normal mode** (default): reads (`read_file`, `search_text`) are automatic; file writes (`write_file`) and allowlisted command execution (`run_command`) require separate interactive approval for each action.
+- **Normal mode** (default): reads (`read_file`, `search_text`, `search_symbols`, `list_files`) are automatic; file writes (`write_file`) and allowlisted command execution (`run_command`) require separate interactive approval for each action.
 - **Plan mode** (`--plan --agent` or `--policy plan`): read-only; attempts to modify files or execute commands are strictly blocked by policy without prompting for approval.
-- **Autonomous mode** (`--policy autonomous`): allows only explicitly permitted actions to execute without interactive approval.
+- **Autonomous mode** (`--policy autonomous`): allows only explicitly permitted actions to execute without interactive approval (`--allow-tool <tool>`). Autonomous permissions are disabled by default and can be configured through global (`~/.forge/config.json`) and project (`.forge/config.json`) settings.
 
-All tool calls are dispatched through `ToolRegistry` and strictly validated against parameter schemas (unexpected fields are forbidden). HTTP agent endpoints remain strictly read-only.
+All tool calls are dispatched through `ToolRegistry` and strictly validated against parameter schemas (unexpected fields are forbidden). HTTP agent endpoints remain strictly read-only. Repository context selection allocates token budgets across nested `FORGE.md`/`AGENTS.md` instructions, file inventories, and requested context files while honoring `.gitignore` and sensitive file exclusions.
 
 ## API endpoints
 

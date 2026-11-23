@@ -1,7 +1,15 @@
+from forge.context.checkpoint import (
+    CheckpointManager,
+    FileSnapshot,
+    RollbackResult,
+    TaskCheckpoint,
+)
 from forge.context.workspace import (
     FileList,
     FileMatch,
     SearchResults,
+    SymbolMatch,
+    SymbolSearchResults,
     Workspace,
     WorkspaceContext,
     WorkspaceConflictError,
@@ -15,9 +23,15 @@ from forge.context.workspace import (
 )
 
 __all__ = [
+    "CheckpointManager",
     "FileList",
     "FileMatch",
+    "FileSnapshot",
+    "RollbackResult",
     "SearchResults",
+    "SymbolMatch",
+    "SymbolSearchResults",
+    "TaskCheckpoint",
     "Workspace",
     "WorkspaceContext",
     "WorkspaceConflictError",
