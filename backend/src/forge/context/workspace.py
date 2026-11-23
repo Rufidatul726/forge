@@ -9,6 +9,7 @@ import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path, PureWindowsPath
+from typing import Any
 
 MAX_FILE_BYTES = 1024 * 1024
 MAX_LIST_LIMIT = 1000

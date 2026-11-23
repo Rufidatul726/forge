@@ -84,9 +84,11 @@ In `plan` mode, file modifications and commands are unconditionally blocked befo
 ### Checkpoints and rollback architecture
 
 `CheckpointManager` (`backend/src/forge/context/checkpoint.py`) tracks file states before and after task executions:
-- **Pre-change state recording**: Before any file is modified or created in a task, its original pre-change content and SHA-256 hash are recorded. Subsequent edits within the same task preserve the original baseline.
-- **Post-change verification**: Post-change hashes are recorded upon successful write.
-- **Conflict detection and safe rollback**: During rollback (`forge rollback` or `mgr.rollback(task_id)`), current file content is compared against the recorded post-change hash. If external changes occurred after the task, rollback flags a conflict and skips the file to ensure unrelated user edits are never overwritten. Unmodified task changes are safely reverted (deleting files created in the task and restoring modified files atomically).
+- **Task ID format validation**: Task IDs are strictly validated (`^[A-Za-z0-9_-]+$`, max 128 chars) to prevent directory traversal or checkpoint filename manipulation.
+- **Path and root security**: Restored paths are validated against the canonical workspace root; absolute paths, directory traversal sequences, symlinks, and files excluded by workspace security rules (`.env`, secrets, `.git`, ignored directories) are strictly rejected.
+- **Pre-change state recording**: Before any file is modified or created in a task, its original pre-change content and SHA-256 hash are recorded. Subsequent edits within the same task preserve the original baseline. Unchanged files and rejected writes never record checkpoint snapshots.
+- **Post-change verification**: Post-change hashes are recorded from the actual resulting file on disk upon successful write.
+- **Conflict detection and safe rollback**: During rollback (`forge rollback` or `mgr.rollback(task_id)`), current file content is compared against the recorded post-change hash. If external changes occurred after the task, or if an existed file was deleted, rollback flags a conflict and skips the file to ensure unrelated user edits are never overwritten. Tampered snapshot data (such as checksum mismatches or corrupted payloads) is flagged as a conflict. Unmodified task changes are safely reverted (deleting files created in the task and restoring modified files atomically).
 
 ### Repository context and token budget selection
 

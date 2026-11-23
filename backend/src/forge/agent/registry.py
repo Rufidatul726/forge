@@ -98,17 +98,27 @@ async def _handle_write_file(args: WriteFileArgs, ctx: ToolExecutionContext) -> 
             if ctx.policy_config.requires_approval("write_file", read_only=False)
             else (lambda p: True)
         )
+
+        # Capture pre-change content before any modification occurs
+        pre_content: str | None = None
         if ctx.checkpoint_manager and ctx.task_id:
             try:
                 pre_content = ctx.workspace.read_text(args.path)
             except WorkspaceError:
                 pre_content = None
-            ctx.checkpoint_manager.record_pre_change(ctx.task_id, args.path, pre_content)
 
         result = ctx.workspace.write_text(args.path, args.content, approve=approve)
 
-        if ctx.checkpoint_manager and ctx.task_id:
-            ctx.checkpoint_manager.record_post_change(ctx.task_id, args.path, args.content)
+        # Only record checkpoint if the write succeeded and actually changed the file
+        if result.changed and ctx.checkpoint_manager and ctx.task_id:
+            ctx.checkpoint_manager.record_pre_change(ctx.task_id, args.path, pre_content)
+            try:
+                actual_post_content = ctx.workspace.read_text(args.path)
+                ctx.checkpoint_manager.record_post_change(
+                    ctx.task_id, args.path, actual_post_content
+                )
+            except WorkspaceError:
+                pass
 
         return ToolResult(
             name="write_file",
