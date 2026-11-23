@@ -26,6 +26,12 @@ from forge.agent import (
 from forge.providers import ProviderError, get_provider
 from forge.providers.models import ChatMessage
 from forge.sessions import SessionNotFoundError, SessionStore
+from forge.intelligence.context import TokenBudgetBuilder
+from forge.intelligence.indexer import RepositoryIndexer
+from forge.intelligence.parsers.registry import get_parser_for_language
+from forge.intelligence.retrieval import ContextRetrievalEngine
+from forge.intelligence.scanner import RepoScanner, detect_language, is_test_file
+from forge.intelligence.store import IndexStore
 
 app = typer.Typer(
     name="forge",
@@ -565,6 +571,68 @@ def diff(workspace: Path = typer.Argument(Path("."), help="Repository to inspect
         console.print("[dim]No unstaged changes.[/] ")
 
 
+@app.command("index")
+def index_command(
+    status: bool = typer.Option(False, "--status", help="Show index status and statistics."),
+    force: bool = typer.Option(False, "--force", help="Force a clean re-indexing run from scratch."),
+    workspace: Path = typer.Option(Path("."), "-w", "--workspace", help="Path to workspace root."),
+) -> None:
+    root = resolve_workspace(workspace)
+    store = IndexStore(root)
+
+    if status:
+        stats = store.get_stats()
+        if not stats.last_run_at:
+            console.print("[dim]No repository index found. Run 'forge index' to index the workspace.[/]")
+            return
+
+        table = Table(title="Repository Intelligence Index Status")
+        table.add_column("Property", style="cyan")
+        table.add_column("Value", style="bold green")
+
+        table.add_row("Total Files Indexed", str(stats.total_files))
+        table.add_row("Total Symbols Indexed", str(stats.total_symbols))
+        table.add_row("Last Run Status", str(stats.last_run_status))
+        table.add_row("Last Run Completed", str(stats.last_run_at))
+        table.add_row("Last Run Duration", f"{stats.last_run_duration_ms:0.1f} ms")
+
+        if stats.languages:
+            langs_str = ", ".join(f"{k}: {v}" for k, v in stats.languages.items())
+            table.add_row("Languages", langs_str)
+
+        if stats.symbols_by_kind:
+            kinds_str = ", ".join(f"{k}: {v}" for k, v in stats.symbols_by_kind.items())
+            table.add_row("Symbols Breakdown", kinds_str)
+
+        console.print(table)
+        return
+
+    indexer = RepositoryIndexer(root, store=store)
+    try:
+        console.print(f"[cyan]Indexing workspace:[/] {root} {'(forced full rebuild)' if force else '(incremental)'}...")
+        stats = indexer.index(force=force)
+        console.print(
+            f"[green]Indexed repository successfully[/] in {stats.last_run_duration_ms:0.1f}ms: "
+            f"[bold]{stats.total_files}[/] files, [bold]{stats.total_symbols}[/] symbols."
+        )
+    except Exception as error:
+        console.print(f"[red]Indexing failed:[/] {error}")
+        raise typer.Exit(code=1) from error
+
+
+@app.command("map")
+def map_command(
+    workspace: Path = typer.Option(Path("."), "-w", "--workspace", help="Path to workspace root."),
+) -> None:
+    root = resolve_workspace(workspace)
+    scanner = RepoScanner(root)
+    inventory = scanner.scan()
+    repo_map = scanner.generate_repo_map(inventory)
+
+    console.print(Panel(repo_map.summary_text, title="Repository Intelligence Map", border_style="cyan"))
+    console.print(repo_map.tree_text)
+
+
 @app.command("symbols")
 def symbols_command(
     query: str = typer.Argument(..., help="Symbol query to search for."),
@@ -573,10 +641,31 @@ def symbols_command(
     workspace: Path = typer.Option(Path("."), "-w", "--workspace", help="Path to workspace root."),
 ) -> None:
     root = resolve_workspace(workspace)
+    store = IndexStore(root)
+    stats = store.get_stats()
+
+    # If SQLite index has symbols, use persistent index
+    if stats.total_symbols > 0:
+        results = store.search_symbols(query, limit=limit)
+        if not results:
+            console.print("[dim]No matching symbols found in persistent index.[/]")
+            return
+        table = Table(title=f"Indexed Symbols matching '{query}'")
+        table.add_column("Kind", style="cyan")
+        table.add_column("Name", style="bold green")
+        table.add_column("Location", style="yellow")
+        table.add_column("Signature / Details", style="dim")
+        for m in results:
+            details = m.signature or (m.docstring[:60] if m.docstring else "")
+            table.add_row(m.kind, m.name, f"{m.path}:{m.line_number}", details)
+        console.print(table)
+        return
+
+    # Fallback to workspace regex symbol search
     ws = Workspace(root)
     try:
-        results = ws.search_symbols(query, pattern=pattern, limit=limit)
-        if not results.matches:
+        ws_results = ws.search_symbols(query, pattern=pattern, limit=limit)
+        if not ws_results.matches:
             console.print("[dim]No matching symbols found.[/]")
             return
         table = Table(title=f"Symbols matching '{query}'")
@@ -584,12 +673,171 @@ def symbols_command(
         table.add_column("Name", style="bold green")
         table.add_column("Location", style="yellow")
         table.add_column("Line", style="dim")
-        for m in results.matches:
-            table.add_row(m.kind, m.name, f"{m.path}:{m.line_number}", m.line)
+        for wm in ws_results.matches:
+            table.add_row(wm.kind, wm.name, f"{wm.path}:{wm.line_number}", wm.line)
         console.print(table)
     except WorkspaceError as error:
         console.print(f"[red]Symbol search error:[/] {getattr(error, 'public_message', str(error))}")
         raise typer.Exit(code=1) from error
+
+
+@app.command("references")
+def references_command(
+    symbol: str = typer.Argument(..., help="Symbol name to find references for."),
+    limit: int = typer.Option(100, "--limit", help="Maximum number of references."),
+    workspace: Path = typer.Option(Path("."), "-w", "--workspace", help="Path to workspace root."),
+) -> None:
+    root = resolve_workspace(workspace)
+    store = IndexStore(root)
+    stats = store.get_stats()
+
+    if stats.total_symbols == 0:
+        console.print("[yellow]Repository is not yet indexed. Indexing now...[/]")
+        indexer = RepositoryIndexer(root, store=store)
+        indexer.index()
+
+    refs = store.find_references(symbol, limit=limit)
+    if not refs:
+        console.print(f"[dim]No references found for symbol '{symbol}'.[/]")
+        return
+
+    table = Table(title=f"References to '{symbol}'")
+    table.add_column("Symbol", style="bold green")
+    table.add_column("Location", style="yellow")
+    table.add_column("Kind", style="cyan")
+    table.add_column("Status", style="magenta")
+    table.add_column("Target", style="dim")
+
+    for r in refs:
+        status = "[green]Resolved[/]" if r.get("is_resolved") else "[yellow]Unresolved[/]"
+        target = r.get("target_path") or (r.get("target_symbol_name") or "-")
+        table.add_row(
+            r["symbol_name"],
+            f"{r['source_path']}:{r['line_number']}",
+            r["kind"],
+            status,
+            str(target),
+        )
+    console.print(table)
+
+
+@app.command("explain")
+def explain_command(
+    path: str = typer.Argument(..., help="Workspace-relative file path to explain."),
+    workspace: Path = typer.Option(Path("."), "-w", "--workspace", help="Path to workspace root."),
+) -> None:
+    root = resolve_workspace(workspace)
+    ws = Workspace(root)
+
+    try:
+        content = ws.read_text(path)
+    except WorkspaceError as error:
+        console.print(f"[red]Could not read file:[/] {error}")
+        raise typer.Exit(code=1) from error
+
+    lang = detect_language(path)
+    parser = get_parser_for_language(lang)
+
+    extracted = parser.parse(path, content) if parser else None
+    line_count = len(content.splitlines())
+    byte_count = len(content.encode("utf-8"))
+
+    console.print(
+        Panel(
+            f"[bold]Path:[/] {path}\n"
+            f"[bold]Language:[/] {lang} ({line_count} lines, {byte_count:,} bytes)\n"
+            f"[bold]Is Test File:[/] {'Yes' if is_test_file(path) else 'No'}",
+            title=f"Explain File: {path}",
+            border_style="cyan",
+        )
+    )
+
+    if extracted and extracted.symbols:
+        table = Table(title="Defined Symbols")
+        table.add_column("Kind", style="cyan")
+        table.add_column("Name", style="bold green")
+        table.add_column("Line", style="yellow")
+        table.add_column("Parent", style="dim")
+        table.add_column("Signature / Doc", style="dim")
+        for s in extracted.symbols:
+            sig = s.signature or (s.docstring[:60] if s.docstring else "")
+            table.add_row(s.kind.value if hasattr(s.kind, "value") else str(s.kind), s.name, str(s.line_number), s.parent_name or "-", sig)
+        console.print(table)
+
+    if extracted and extracted.imports:
+        table_imp = Table(title="Imports")
+        table_imp.add_column("Module", style="green")
+        table_imp.add_column("Imported Names", style="cyan")
+        table_imp.add_column("Line", style="dim")
+        for imp in extracted.imports:
+            table_imp.add_row(imp.module, ", ".join(imp.imported_names), str(imp.line_number))
+        console.print(table_imp)
+
+    # Check incoming references from index
+    store = IndexStore(root)
+    with store._session() as conn:
+        incoming_rows = conn.execute(
+            """
+            SELECT references_index.symbol_name, references_index.line_number, files.relative_path AS caller
+            FROM references_index
+            JOIN files ON files.id = references_index.file_id
+            WHERE references_index.target_path = ? AND files.is_deleted = 0
+            LIMIT 20
+            """,
+            (path,),
+        ).fetchall()
+        if incoming_rows:
+            table_inc = Table(title="Incoming References")
+            table_inc.add_column("Caller File", style="yellow")
+            table_inc.add_column("Line", style="dim")
+            table_inc.add_column("Symbol Called", style="green")
+            for inc in incoming_rows:
+                table_inc.add_row(inc["caller"], str(inc["line_number"]), inc["symbol_name"])
+            console.print(table_inc)
+
+
+@app.command("context")
+def context_command(
+    task: str = typer.Argument(..., help="Task description to retrieve context for."),
+    budget: int = typer.Option(4000, "--budget", help="Maximum token budget."),
+    workspace: Path = typer.Option(Path("."), "-w", "--workspace", help="Path to workspace root."),
+) -> None:
+    root = resolve_workspace(workspace)
+    retrieval = ContextRetrievalEngine(root)
+    retrieved = retrieval.retrieve(task)
+
+    builder = TokenBudgetBuilder(max_tokens=budget)
+    built = builder.build_context(retrieved)
+
+    # Manifest Table
+    table = Table(title="Context Retrieval Manifest")
+    table.add_column("Item / Path", style="bold green")
+    table.add_column("Est. Tokens", style="cyan")
+    table.add_column("Score", style="yellow")
+    table.add_column("Relevance Reasons", style="dim")
+
+    for item in built.manifest.included_items:
+        table.add_row(item.path, str(item.tokens), f"{item.score:g}" if item.score else "-", "; ".join(item.reasons))
+    console.print(table)
+
+    if built.manifest.excluded_items:
+        table_exc = Table(title="Excluded Candidates")
+        table_exc.add_column("Path", style="dim")
+        table_exc.add_column("Est. Tokens", style="dim")
+        table_exc.add_column("Reason", style="red")
+        for exc in built.manifest.excluded_items:
+            table_exc.add_row(exc.path, str(exc.tokens), "; ".join(exc.reasons))
+        console.print(table_exc)
+
+    console.print(
+        Panel(
+            f"[bold]Task:[/] {task}\n"
+            f"[bold]Total Estimated Tokens:[/] {built.manifest.used_tokens} / {built.manifest.budget_tokens}\n"
+            f"[bold]Included Items:[/] {len(built.manifest.included_items)} | [bold]Excluded:[/] {len(built.manifest.excluded_items)}",
+            title="Context Budget Summary",
+            border_style="green",
+        )
+    )
 
 
 @app.command("checkpoints")
