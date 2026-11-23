@@ -166,7 +166,14 @@ class WorkspaceContext:
 
 @dataclass(frozen=True)
 class _CompiledGitIgnoreRule:
-    """Compiled rule for Git-compatible .gitignore evaluation."""
+    """Compiled rule for Gitignore-compatible evaluation across supported patterns.
+
+    Scope:
+    Supports nested .gitignore files, rule negation (!), directory-only rules (/),
+    anchored patterns (/path), and wildcards (*, **, ?). Edge cases like complex
+    trailing escaped whitespace or shell character sets beyond standard classes
+    are not guaranteed identical to git core.
+    """
     base_dir: str
     pattern: str
     negated: bool
@@ -339,9 +346,44 @@ class Workspace:
         return rules
 
     def _matches_gitignore(self, relative: Path) -> bool:
+        """Evaluate Gitignore-compatible rules for supported patterns across root and nested files.
+
+        Note: Supports common patterns (negation '!', directory-only '/', anchored '/', wildcards '*', '**', '?').
+        Follows standard Git rule that files cannot be re-included if a parent directory is excluded.
+        """
         if not self._compiled_gitignore_rules:
             return False
 
+        # 1. Check if any parent directory is excluded by gitignore
+        # In Git, once a parent directory is excluded, rules on contained files cannot re-include them.
+        parts = relative.parts
+        if len(parts) > 1:
+            for i in range(1, len(parts)):
+                parent_rel = Path(*parts[:i])
+                parent_posix = parent_rel.as_posix()
+                parent_ignored = False
+                for rule in self._compiled_gitignore_rules:
+                    if rule.base_dir:
+                        if parent_posix == rule.base_dir:
+                            path_in_base = ""
+                        elif parent_posix.startswith(rule.base_dir + "/"):
+                            path_in_base = parent_posix[len(rule.base_dir) + 1 :]
+                        else:
+                            continue
+                    else:
+                        path_in_base = parent_posix
+
+                    if not path_in_base:
+                        continue
+
+                    # Directory rule applies to parent directories
+                    if rule.regex.search(parent_posix if not rule.base_dir else path_in_base):
+                        parent_ignored = not rule.negated
+
+                if parent_ignored:
+                    return True
+
+        # 2. Check the path itself
         rel_posix = relative.as_posix()
         full_target = self.root / relative
         is_dir = full_target.is_dir() if full_target.exists() else False

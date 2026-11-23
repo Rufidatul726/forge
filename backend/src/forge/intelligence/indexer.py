@@ -37,12 +37,23 @@ class RepositoryIndexer:
         files_removed = 0
 
         try:
+            # 1. Bounded scan of workspace first
+            inventory = self.scanner.scan()
+
             if force:
+                # If scan was truncated, abort forced reindexing without clearing existing index
+                if inventory.truncated:
+                    err_msg = (
+                        f"Forced re-indexing aborted: repository scan was truncated "
+                        f"({len(inventory.files)} files reached scan limit). "
+                        "Preserving existing index to prevent index loss on incomplete scan."
+                    )
+                    logger.warning(err_msg)
+                    raise RuntimeError(err_msg)
+
                 logger.info("Forced re-indexing requested; clearing previous index data.")
                 self.store.clear_index()
 
-            # 1. Bounded scan of workspace
-            inventory = self.scanner.scan()
             existing_files = self.store.get_existing_files() if not force else {}
 
             scanned_map = {f.relative_path: f for f in inventory.files}
@@ -119,11 +130,15 @@ class RepositoryIndexer:
                         )
                     )
 
-            # Replace dependency snapshot on every successful complete scan, including when empty
+            # Replace dependency snapshot only after a complete scan
             if not inventory.truncated:
                 self.store.record_dependencies(deps_to_record)
-            elif deps_to_record:
-                self.store.record_dependencies(deps_to_record)
+            else:
+                logger.warning(
+                    "Repository scan was truncated (%d files reached limit); "
+                    "preserving existing dependency records.",
+                    len(inventory.files),
+                )
 
             elapsed_ms = (time.perf_counter() - start_time) * 1000.0
             self.store.finish_run(

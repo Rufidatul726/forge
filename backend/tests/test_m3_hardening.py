@@ -277,3 +277,120 @@ def test_reference_resolution_distinction_explicit():
     )
     assert rec.is_resolved is False
     assert "Approximate syntactic reference" in (ReferenceRecord.__doc__ or "")
+
+
+# 8. Forced indexing aborts safely without clearing index on truncated scan
+def test_forced_indexing_aborts_without_clearing_index_on_truncated_scan(tmp_path: Path):
+    for i in range(6):
+        (tmp_path / f"module_{i}.py").write_text(f"def func_{i}(): pass\n", encoding="utf-8")
+
+    store = IndexStore(tmp_path)
+    indexer = RepositoryIndexer(tmp_path, store=store)
+    stats1 = indexer.index()
+    assert stats1.total_files == 6
+    assert len(store.get_existing_files()) == 6
+
+    # Simulate a truncated scanner (e.g. max_files=2)
+    truncated_scanner = RepoScanner(tmp_path, max_files=2)
+    indexer.scanner = truncated_scanner
+
+    # Attempting forced re-indexing must abort with RuntimeError
+    with pytest.raises(RuntimeError, match="scan was truncated"):
+        indexer.index(force=True)
+
+    # Existing index data must NOT have been wiped
+    files_remaining = store.get_existing_files()
+    assert len(files_remaining) == 6
+    stats_after = store.get_stats()
+    assert stats_after.total_files == 6
+
+
+# 9. Truncated scan does not replace dependencies with partial data
+def test_truncated_scan_does_not_replace_dependencies_with_partial_data(tmp_path: Path):
+    # Create pyproject.toml with backend deps
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname = "pkg"\ndependencies = [\n  "fastapi",\n  "uvicorn",\n]\n',
+        encoding="utf-8",
+    )
+    # Create frontend package.json in subfolder
+    fe = tmp_path / "frontend"
+    fe.mkdir()
+    (fe / "package.json").write_text(
+        '{\n  "name": "ui",\n  "dependencies": {\n    "react": "^18.0.0"\n  }\n}\n',
+        encoding="utf-8",
+    )
+
+    store = IndexStore(tmp_path)
+    indexer = RepositoryIndexer(tmp_path, store=store)
+    indexer.index()
+
+    with store._session() as conn:
+        initial_deps = {row[0] for row in conn.execute("SELECT name FROM dependencies").fetchall()}
+    assert initial_deps == {"fastapi", "uvicorn", "react"}
+
+    # Simulate truncated scan where only pyproject.toml is scanned, but package.json is past scan boundary
+    truncated_scanner = RepoScanner(tmp_path, max_files=1)
+    indexer.scanner = truncated_scanner
+    indexer.index()
+
+    # The existing dependency snapshot must remain intact (not overwritten with partial data)
+    with store._session() as conn:
+        preserved_deps = {row[0] for row in conn.execute("SELECT name FROM dependencies").fetchall()}
+    assert preserved_deps == {"fastapi", "uvicorn", "react"}
+
+
+# 10. Manifest accuracy when budget reconciliation occurs
+def test_manifest_accuracy_when_budget_reconciliation_occurs():
+    from forge.intelligence.retrieval import RetrievedContext, ScoredFileContext
+
+    builder = TokenBudgetBuilder(max_tokens=150)
+    retrieved = RetrievedContext(
+        task="inspect files",
+        instructions="Instructions " * 10,
+        repo_map_summary="Map summary " * 10,
+        scored_files=[
+            ScoredFileContext("a.py", 100.0, ["Exact match"], "def a(): return 1\n" * 50),
+            ScoredFileContext("b.py", 90.0, ["Second match"], "def b(): return 2\n" * 50),
+        ],
+    )
+
+    built = builder.build_context(retrieved)
+
+    # Every item listed in included_items must actually be present in prompt_text
+    for inc_item in built.manifest.included_items:
+        if inc_item.path not in {"PROJECT_INSTRUCTIONS", "REPOSITORY_MAP"}:
+            assert inc_item.path in built.prompt_text
+
+    # No item in excluded_items should be in prompt_text as an included file section
+    for exc_item in built.manifest.excluded_items:
+        assert f"=== FILE: {exc_item.path}" not in built.prompt_text
+
+    # Total used tokens strictly equals assembled prompt tokens
+    assert built.manifest.used_tokens == estimate_tokens(built.prompt_text)
+    assert built.manifest.used_tokens <= 150
+
+
+# 11. Gitignore parent exclusion prevents child re-inclusion
+def test_gitignore_parent_directory_exclusion_prevents_child_reinclusion(tmp_path: Path):
+    # In Git, once a parent directory is excluded, child negation rules cannot re-include files
+    (tmp_path / ".gitignore").write_text(
+        """
+excluded_dir/
+!excluded_dir/keep.txt
+""",
+        encoding="utf-8",
+    )
+
+    ex_dir = tmp_path / "excluded_dir"
+    ex_dir.mkdir()
+    (ex_dir / "keep.txt").write_text("should still be excluded", encoding="utf-8")
+    (ex_dir / "other.txt").write_text("also excluded", encoding="utf-8")
+    (tmp_path / "root.txt").write_text("visible", encoding="utf-8")
+
+    ws = Workspace(tmp_path)
+    paths = ws.list_files().paths
+
+    assert "root.txt" in paths
+    assert "excluded_dir/keep.txt" not in paths
+    assert "excluded_dir/other.txt" not in paths
+

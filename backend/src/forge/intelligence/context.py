@@ -234,10 +234,24 @@ class TokenBudgetBuilder:
                     )
 
         prompt_text = "\n\n".join(sections)
-        # Strict hard enforcement: ensure total assembled prompt never exceeds max_tokens
-        while prompt_text and estimate_tokens(prompt_text) > self.max_tokens:
-            prompt_text = prompt_text[:-4].rstrip()
+        # Structural reconciliation: if total prompt ever exceeds max_tokens, pop whole sections
+        # and synchronize the manifest so included/excluded items remain 100% accurate.
+        while sections and estimate_tokens("\n\n".join(sections)) > self.max_tokens:
+            sections.pop()
+            if included:
+                removed_item = included.pop()
+                if removed_item.path not in {"PROJECT_INSTRUCTIONS", "REPOSITORY_MAP"}:
+                    excluded.append(
+                        ContextItemManifest(
+                            path=removed_item.path,
+                            tokens=removed_item.tokens,
+                            reasons=removed_item.reasons + ["Omitted during final budget reconciliation"],
+                            score=removed_item.score,
+                            is_test=removed_item.is_test,
+                        )
+                    )
 
+        prompt_text = "\n\n".join(sections)
         used_tokens = estimate_tokens(prompt_text)
 
         manifest = ContextManifest(
