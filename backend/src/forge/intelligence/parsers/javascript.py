@@ -55,7 +55,13 @@ RE_NEW = re.compile(r"""\bnew\s+(?P<name>[a-zA-Z_$][a-zA-Z0-9_$]*)\s*\(""")
 
 
 class JavaScriptTypeScriptParser(BaseParser):
-    """Symbol and reference parser for JavaScript, TypeScript, TSX, and JSX files."""
+    """Symbol and reference parser for JavaScript, TypeScript, TSX, and JSX files.
+
+    Distinction Note:
+    Uses regular expressions and line-based scanning to detect definitions, imports,
+    and identifier usages. This is designed for search and navigation, not a complete
+    cross-file call graph, and does not evaluate complex TypeScript expressions or types.
+    """
 
     def parse(self, rel_path: str, content: str) -> ExtractedFileSymbols:
         symbols: list[SymbolRecord] = []

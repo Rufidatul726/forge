@@ -2,6 +2,7 @@ import json
 import re
 from collections.abc import AsyncIterator, Callable, Mapping
 from pathlib import Path
+from typing import Any
 from uuid import uuid4
 
 from pydantic import BaseModel, Field, field_validator
@@ -16,8 +17,13 @@ from forge.agent.registry import (
 from forge.context import CheckpointManager, Workspace
 from forge.context.workspace import WriteProposal
 from forge.execution import CommandProposal, CommandRunner
-from forge.intelligence.context import TokenBudgetBuilder
-from forge.intelligence.retrieval import ContextRetrievalEngine
+from forge.intelligence.context import BuiltContext, ContextManifest, TokenBudgetBuilder
+from forge.intelligence.retrieval import (
+    ContextRetrievalEngine,
+    RetrievedContext,
+    ScoredFileContext,
+)
+from forge.intelligence.scanner import is_test_file
 from forge.providers import ModelProvider
 from forge.providers.models import (
     ChatMessage,
@@ -66,6 +72,7 @@ class AgentTaskResult(BaseModel):
     session_id: str | None = None
     read_only: bool = True
     tool_outcomes: list[AgentToolOutcome] = Field(default_factory=list, exclude=True)
+    context_manifest: Any = Field(default=None, exclude=True)
 
 
 class AgentService:
@@ -103,7 +110,8 @@ class AgentService:
             raise ValueError(f"Agent steps must be between 1 and {MAX_AGENT_STEPS}")
 
         active_policy = policy_config or ExecutionPolicyConfig(policy=policy)
-        context = self._build_context(task.context_paths, task_text=self._extract_task_text(task))
+        built_context = self.build_context(task.context_paths, task_text=self._extract_task_text(task))
+        context = built_context.prompt_text
         task_id = task.session_id or uuid4().hex
 
         context_obj = ToolExecutionContext(
@@ -154,12 +162,18 @@ class AgentService:
                     tool_calls.append(parsed_call)
 
             if not tool_calls:
+                included_paths = [
+                    item.path
+                    for item in built_context.manifest.included_items
+                    if item.path not in {"PROJECT_INSTRUCTIONS", "REPOSITORY_MAP"}
+                ]
                 return AgentTaskResult(
                     generation=response,
                     workspace_root=str(self._workspace.root),
-                    context_paths=task.context_paths,
+                    context_paths=task.context_paths or included_paths,
                     read_only=is_read_only,
                     tool_outcomes=outcomes,
+                    context_manifest=built_context.manifest,
                 )
 
             # Record assistant turn with tool calls
@@ -205,12 +219,18 @@ class AgentService:
                 max_tokens=task.max_tokens,
             )
         )
+        included_paths = [
+            item.path
+            for item in built_context.manifest.included_items
+            if item.path not in {"PROJECT_INSTRUCTIONS", "REPOSITORY_MAP"}
+        ]
         return AgentTaskResult(
             generation=final_response,
             workspace_root=str(self._workspace.root),
-            context_paths=task.context_paths,
+            context_paths=task.context_paths or included_paths,
             read_only=is_read_only,
             tool_outcomes=outcomes,
+            context_manifest=built_context.manifest,
         )
 
     async def run_loop(
@@ -233,7 +253,8 @@ class AgentService:
         )
 
     async def run(self, task: AgentTaskRequest) -> AgentTaskResult:
-        context = self._build_context(task.context_paths, task_text=self._extract_task_text(task))
+        built_context = self.build_context(task.context_paths, task_text=self._extract_task_text(task))
+        context = built_context.prompt_text
         system_message = ChatMessage(
             role="system",
             content=(
@@ -250,11 +271,17 @@ class AgentService:
                 max_tokens=task.max_tokens,
             )
         )
+        included_paths = [
+            item.path
+            for item in built_context.manifest.included_items
+            if item.path not in {"PROJECT_INSTRUCTIONS", "REPOSITORY_MAP"}
+        ]
         return AgentTaskResult(
             generation=generation,
             workspace_root=str(self._workspace.root),
-            context_paths=task.context_paths,
+            context_paths=task.context_paths or included_paths,
             read_only=True,
+            context_manifest=built_context.manifest,
         )
 
     async def stream(
@@ -324,55 +351,60 @@ class AgentService:
             m.content for m in task.messages if m.role == "user" and m.content
         )
 
+    def build_context(
+        self,
+        context_paths: list[str],
+        max_token_budget: int = 6000,
+        task_text: str | None = None,
+    ) -> BuiltContext:
+        """Assemble structured, token-budgeted repository context via ContextRetrievalEngine and TokenBudgetBuilder."""
+        # Validate all explicit context_paths upfront to reject outside paths
+        for p in context_paths:
+            self._workspace._resolve_file(p)
+
+        try:
+            retrieval = ContextRetrievalEngine(self._workspace.root, workspace=self._workspace)
+            retrieved = retrieval.retrieve(
+                task_text=task_text or "",
+                candidate_paths=context_paths if context_paths else None,
+                max_source_files=MAX_CONTEXT_FILES,
+            )
+        except Exception:
+            discovered = self._workspace.discover_context(file_limit=100)
+            candidate_files: list[ScoredFileContext] = []
+            for cp in context_paths:
+                try:
+                    content = self._workspace.read_text(cp)
+                    candidate_files.append(
+                        ScoredFileContext(
+                            relative_path=cp,
+                            score=50.0,
+                            reasons=["Explicitly specified in task context"],
+                            content=content,
+                            is_test=is_test_file(cp),
+                        )
+                    )
+                except Exception:
+                    pass
+            retrieved = RetrievedContext(
+                task=task_text or "",
+                instructions=discovered.instructions,
+                repo_map_summary="",
+                scored_files=candidate_files,
+            )
+
+        builder = TokenBudgetBuilder(max_tokens=max_token_budget)
+        return builder.build_context(retrieved)
+
     def _build_context(
         self,
         context_paths: list[str],
         max_token_budget: int = 6000,
         task_text: str | None = None,
     ) -> str:
-        # Validate all explicit context_paths upfront to reject outside paths
-        for p in context_paths:
-            self._workspace._resolve_file(p)
-
-        discovered = self._workspace.discover_context(file_limit=200)
-        char_budget = max_token_budget * 4
-
-        sections: list[str] = []
-
-        # Instructions (root + nested)
-        if discovered.instructions:
-            inst_budget = int(char_budget * 0.3)
-            inst_text = discovered.instructions[:inst_budget]
-            sections.append(f"Project instructions:\n{inst_text}")
-
-        # Workspace file list
-        files_budget = int(char_budget * 0.25)
-        files_text = "\n".join(discovered.files.paths)[:files_budget]
-        sections.append(f"Workspace file list:\n{files_text}")
-
-        # Remaining budget for context files
-        used_chars = sum(len(s) for s in sections)
-        remaining_chars = max(0, char_budget - used_chars)
-
-        # Context paths to include: explicit ones if provided, or retrieved ones via intelligence
-        effective_paths = list(context_paths)
-        if not effective_paths and task_text:
-            try:
-                retrieval = ContextRetrievalEngine(self._workspace.root, workspace=self._workspace)
-                retrieved = retrieval.retrieve(task_text, max_source_files=5)
-                effective_paths = [f.relative_path for f in retrieved.scored_files if not f.is_test]
-            except Exception:
-                effective_paths = []
-
-        if effective_paths and remaining_chars > 0:
-            per_file_chars = max(500, remaining_chars // len(effective_paths))
-            for path in effective_paths:
-                if remaining_chars <= 0:
-                    break
-                content = self._workspace.read_text(path)
-                take_chars = min(per_file_chars, len(content), remaining_chars)
-                excerpt = content[:take_chars]
-                sections.append(f"File: {path}\n{excerpt}")
-                remaining_chars -= len(sections[-1])
-
-        return "\n\n".join(sections)[:char_budget]
+        built = self.build_context(
+            context_paths,
+            max_token_budget=max_token_budget,
+            task_text=task_text,
+        )
+        return built.prompt_text

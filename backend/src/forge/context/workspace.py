@@ -164,6 +164,112 @@ class WorkspaceContext:
     all_instructions: dict[str, str] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class _CompiledGitIgnoreRule:
+    """Compiled rule for Git-compatible .gitignore evaluation."""
+    base_dir: str
+    pattern: str
+    negated: bool
+    dir_only: bool
+    regex: re.Pattern[str]
+
+
+def _glob_to_regex(pat: str) -> str:
+    i = 0
+    n = len(pat)
+    res: list[str] = []
+    while i < n:
+        c = pat[i]
+        if c == "*":
+            if i + 1 < n and pat[i + 1] == "*":
+                if i + 2 < n and pat[i + 2] == "/":
+                    res.append("(?:.+/)?")
+                    i += 3
+                    continue
+                elif i > 0 and pat[i - 1] == "/":
+                    res.append(".*")
+                    i += 2
+                    continue
+                else:
+                    res.append(".*")
+                    i += 2
+                    continue
+            else:
+                res.append("[^/]*")
+                i += 1
+        elif c == "?":
+            res.append("[^/]")
+            i += 1
+        elif c == "[":
+            j = i + 1
+            if j < n and pat[j] in "!^":
+                j += 1
+            if j < n and pat[j] == "]":
+                j += 1
+            while j < n and pat[j] != "]":
+                j += 1
+            if j >= n:
+                res.append(re.escape("["))
+                i += 1
+            else:
+                expr = pat[i + 1 : j]
+                if expr.startswith("!"):
+                    expr = "^" + expr[1:]
+                res.append(f"[{expr}]")
+                i = j + 1
+        else:
+            res.append(re.escape(c))
+            i += 1
+    return "".join(res)
+
+
+def _compile_gitignore_pattern(pattern: str, base_dir: str) -> _CompiledGitIgnoreRule | None:
+    raw = pattern.strip()
+    if not raw or raw.startswith("#"):
+        return None
+    negated = False
+    if raw.startswith(r"\#") or raw.startswith(r"\!"):
+        raw = raw[1:]
+    elif raw.startswith("!"):
+        negated = True
+        raw = raw[1:].strip()
+    if not raw:
+        return None
+
+    dir_only = raw.endswith("/")
+    if dir_only:
+        raw = raw[:-1]
+    if not raw:
+        return None
+
+    if raw.startswith("/"):
+        anchored = True
+        raw = raw[1:]
+    elif "/" in raw:
+        anchored = True
+    else:
+        anchored = False
+
+    glob_rx = _glob_to_regex(raw)
+    if anchored:
+        pattern_rx = rf"^{glob_rx}" + (r"(?:/.*)?$" if dir_only else r"$")
+    else:
+        pattern_rx = rf"(?:^|/){glob_rx}" + (r"(?:/.*)?$" if dir_only else r"$")
+
+    try:
+        compiled = re.compile(pattern_rx, re.IGNORECASE)
+    except re.error:
+        return None
+
+    return _CompiledGitIgnoreRule(
+        base_dir=base_dir,
+        pattern=pattern,
+        negated=negated,
+        dir_only=dir_only,
+        regex=compiled,
+    )
+
+
 class Workspace:
     """Read-only repository access constrained to a canonical workspace root."""
 
@@ -186,7 +292,82 @@ class Workspace:
         self.root = resolved_root
         self.max_file_bytes = max_file_bytes
         self.max_files_scanned = max_files_scanned
+        self._compiled_gitignore_rules = self._load_all_gitignore_rules()
         self._gitignore_patterns = self._load_gitignore()
+
+    def _load_all_gitignore_rules(self) -> list[_CompiledGitIgnoreRule]:
+        rules: list[_CompiledGitIgnoreRule] = []
+        root_gi = self.root / ".gitignore"
+        if root_gi.is_file():
+            try:
+                for line in root_gi.read_text(encoding="utf-8").splitlines():
+                    r = _compile_gitignore_pattern(line, "")
+                    if r is not None:
+                        rules.append(r)
+            except Exception:
+                pass
+
+        try:
+            for dirpath, dirnames, filenames in os.walk(self.root, followlinks=False):
+                dirnames[:] = [
+                    d
+                    for d in dirnames
+                    if d.casefold() not in _IGNORED_DIRECTORIES
+                    and d.casefold() not in _SENSITIVE_DIRECTORIES
+                ]
+                dirnames.sort()
+                current_p = Path(dirpath)
+                try:
+                    rel_dir = current_p.relative_to(self.root)
+                except ValueError:
+                    continue
+                if rel_dir == Path("."):
+                    continue
+                if ".gitignore" in filenames:
+                    gi_file = current_p / ".gitignore"
+                    base_str = rel_dir.as_posix()
+                    try:
+                        for line in gi_file.read_text(encoding="utf-8").splitlines():
+                            r = _compile_gitignore_pattern(line, base_str)
+                            if r is not None:
+                                rules.append(r)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+        return rules
+
+    def _matches_gitignore(self, relative: Path) -> bool:
+        if not self._compiled_gitignore_rules:
+            return False
+
+        rel_posix = relative.as_posix()
+        full_target = self.root / relative
+        is_dir = full_target.is_dir() if full_target.exists() else False
+        ignored = False
+
+        for rule in self._compiled_gitignore_rules:
+            if rule.base_dir:
+                if rel_posix == rule.base_dir:
+                    path_in_base = ""
+                elif rel_posix.startswith(rule.base_dir + "/"):
+                    path_in_base = rel_posix[len(rule.base_dir) + 1 :]
+                else:
+                    continue
+            else:
+                path_in_base = rel_posix
+
+            if not path_in_base:
+                continue
+
+            if rule.dir_only and not is_dir and "/" not in path_in_base:
+                continue
+
+            if rule.regex.search(path_in_base):
+                ignored = not rule.negated
+
+        return ignored
 
     def _load_gitignore(self) -> list[str]:
         gi = self.root / ".gitignore"
@@ -723,9 +904,11 @@ class Workspace:
     def _is_excluded(self_or_relative: Any, relative: Path | None = None) -> bool:
         if isinstance(self_or_relative, Workspace):
             actual_rel = relative
+            ws = self_or_relative
             patterns = getattr(self_or_relative, "_gitignore_patterns", [])
         else:
             actual_rel = self_or_relative
+            ws = None
             patterns = []
         if actual_rel is None:
             return False
@@ -744,6 +927,10 @@ class Workspace:
             return True
         if Path(filename).suffix.casefold() in _SENSITIVE_SUFFIXES:
             return True
+
+        # Use full Git-compatible ignore matcher if available
+        if ws is not None and getattr(ws, "_compiled_gitignore_rules", None):
+            return ws._matches_gitignore(actual_rel)
 
         if patterns:
             rel_posix = actual_rel.as_posix()

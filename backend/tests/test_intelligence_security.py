@@ -127,7 +127,8 @@ def test_hard_token_budget_enforcement():
 
     built = builder.build_context(retrieved)
     assert built.manifest.used_tokens <= 200
-    assert estimate_tokens(built.prompt_text) <= 205
+    assert estimate_tokens(built.prompt_text) <= 200
+    assert built.manifest.used_tokens == estimate_tokens(built.prompt_text)
 
 
 @pytest.mark.anyio

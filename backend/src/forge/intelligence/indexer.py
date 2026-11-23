@@ -51,9 +51,18 @@ class RepositoryIndexer:
             to_index: list[ScannedFile] = []
             removed_paths: list[str] = []
 
-            for rel_path, (f_id, prev_hash, prev_mtime) in existing_files.items():
-                if rel_path not in scanned_map:
-                    removed_paths.append(rel_path)
+            # If the scan was truncated, we do not have a complete view of the workspace.
+            # Avoid deletion reconciliation to prevent incorrectly removing existing files.
+            if inventory.truncated:
+                logger.warning(
+                    "Repository scan was truncated (%d files reached limit); "
+                    "preserving existing index records and skipping deletion reconciliation.",
+                    len(inventory.files),
+                )
+            else:
+                for rel_path, (f_id, prev_hash, prev_mtime) in existing_files.items():
+                    if rel_path not in scanned_map:
+                        removed_paths.append(rel_path)
 
             for scanned_file in inventory.files:
                 rel_path = scanned_file.relative_path
@@ -66,8 +75,8 @@ class RepositoryIndexer:
                     # New or renamed file
                     to_index.append(scanned_file)
 
-            # 3. Handle deletions
-            if removed_paths:
+            # 3. Handle deletions (only on complete scans)
+            if removed_paths and not inventory.truncated:
                 self.store.remove_files(removed_paths)
                 files_removed = len(removed_paths)
 
@@ -77,7 +86,8 @@ class RepositoryIndexer:
                 extracted: ExtractedFileSymbols | None = None
                 parser = get_parser_for_language(scanned_file.language)
 
-                if parser is not None:
+                # Only parse files within safe parse size bounds
+                if parser is not None and scanned_file.size_bytes <= self.scanner.max_file_bytes:
                     try:
                         content = self.workspace.read_text(rel_path)
                         extracted = parser.parse(rel_path, content)
@@ -109,7 +119,10 @@ class RepositoryIndexer:
                         )
                     )
 
-            if deps_to_record:
+            # Replace dependency snapshot on every successful complete scan, including when empty
+            if not inventory.truncated:
+                self.store.record_dependencies(deps_to_record)
+            elif deps_to_record:
                 self.store.record_dependencies(deps_to_record)
 
             elapsed_ms = (time.perf_counter() - start_time) * 1000.0

@@ -90,6 +90,13 @@ class ImportRecord:
 
 @dataclass(frozen=True)
 class ReferenceRecord:
+    """Approximate syntactic reference or usage of an identifier.
+
+    Distinct from a complete semantic call graph:
+    - Identifiers are recognized as locally defined or imported names within the file.
+    - Does NOT guarantee full cross-file definition resolution, alias tracing,
+      overload disambiguation, or complex TypeScript type evaluation.
+    """
     source_path: str
     symbol_name: str
     line_number: int

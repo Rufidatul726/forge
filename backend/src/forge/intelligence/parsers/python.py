@@ -18,7 +18,12 @@ logger = logging.getLogger("forge.intelligence.parsers.python")
 
 
 class PythonParser(BaseParser):
-    """AST-based symbol and reference parser for Python source files."""
+    """AST-based symbol and approximate reference parser for Python source files.
+
+    Distinction Note:
+    Resolves local and imported names using AST identifier and import mapping for navigation.
+    This provides approximate references, not a full compiler-grade call graph.
+    """
 
     def parse(self, rel_path: str, content: str) -> ExtractedFileSymbols:
         symbols: list[SymbolRecord] = []

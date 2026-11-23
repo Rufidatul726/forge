@@ -24,6 +24,7 @@ class ContextItemManifest:
     tokens: int
     reasons: list[str]
     score: float = 0.0
+    is_test: bool = False
 
 
 @dataclass(frozen=True)
@@ -49,121 +50,195 @@ class TokenBudgetBuilder:
         self.max_tokens = max_tokens
 
     def build_context(self, retrieved: RetrievedContext) -> BuiltContext:
-        remaining_budget = self.max_tokens
         included: list[ContextItemManifest] = []
         excluded: list[ContextItemManifest] = []
         sections: list[str] = []
 
-        # 1. Project Instructions (Priority 1, up to 25% of budget)
+        def current_tokens_with(tentative_section: str | None = None) -> int:
+            if tentative_section is None:
+                if not sections:
+                    return 0
+                return estimate_tokens("\n\n".join(sections))
+            if not sections:
+                return estimate_tokens(tentative_section)
+            return estimate_tokens("\n\n".join([*sections, tentative_section]))
+
+        # 1. Project Instructions (Priority 1, up to 25% of total budget)
         if retrieved.instructions:
-            inst_budget = int(self.max_tokens * 0.25)
-            inst_text = retrieved.instructions
-            inst_tokens = estimate_tokens(inst_text)
-            if inst_tokens > inst_budget:
-                chars_limit = inst_budget * 4
-                inst_text = inst_text[:chars_limit] + "\n... (truncated for budget)"
-                inst_tokens = estimate_tokens(inst_text)
+            inst_budget = max(40, int(self.max_tokens * 0.25))
+            inst_header = "=== PROJECT INSTRUCTIONS ===\nProject instructions:\n"
+            inst_suffix = "\n... (truncated for budget)"
+            full_inst_sec = f"{inst_header}{retrieved.instructions}"
 
-            sections.append(f"=== PROJECT INSTRUCTIONS ===\nProject instructions:\n{inst_text}")
-            remaining_budget -= inst_tokens
-            included.append(
-                ContextItemManifest(
-                    path="PROJECT_INSTRUCTIONS",
-                    tokens=inst_tokens,
-                    reasons=["Project guidelines and instructions"],
+            if estimate_tokens(full_inst_sec) <= inst_budget:
+                inst_sec = full_inst_sec
+            else:
+                # Find maximum characters that fit inside inst_budget
+                low = 0
+                high = len(retrieved.instructions)
+                best_inst = ""
+                while low <= high:
+                    mid = (low + high) // 2
+                    cand = f"{inst_header}{retrieved.instructions[:mid]}{inst_suffix}"
+                    if estimate_tokens(cand) <= inst_budget:
+                        best_inst = cand
+                        low = mid + 1
+                    else:
+                        high = mid - 1
+                inst_sec = best_inst or f"{inst_header}{inst_suffix}"
+
+            if current_tokens_with(inst_sec) <= self.max_tokens:
+                sections.append(inst_sec)
+                inst_tokens = estimate_tokens(inst_sec)
+                included.append(
+                    ContextItemManifest(
+                        path="PROJECT_INSTRUCTIONS",
+                        tokens=inst_tokens,
+                        reasons=["Project guidelines and instructions"],
+                        is_test=False,
+                    )
                 )
-            )
 
-        # 2. Repository Map (Priority 2, up to 15% of budget)
-        if retrieved.repo_map_summary and remaining_budget > 0:
-            map_budget = min(remaining_budget, int(self.max_tokens * 0.15))
-            map_text = retrieved.repo_map_summary
-            map_tokens = estimate_tokens(map_text)
-            if map_tokens > map_budget:
-                chars_limit = map_budget * 4
-                map_text = map_text[:chars_limit] + "\n..."
-                map_tokens = estimate_tokens(map_text)
+        # 2. Repository Map (Priority 2, up to 15% of total budget)
+        curr_tok = current_tokens_with()
+        if retrieved.repo_map_summary and curr_tok < self.max_tokens:
+            map_budget = max(20, min(self.max_tokens - curr_tok, int(self.max_tokens * 0.15)))
+            map_header = "=== REPOSITORY MAP ===\n"
+            map_suffix = "\n..."
+            full_map_sec = f"{map_header}{retrieved.repo_map_summary}"
 
-            sections.append(f"=== REPOSITORY MAP ===\n{map_text}")
-            remaining_budget -= map_tokens
-            included.append(
-                ContextItemManifest(
-                    path="REPOSITORY_MAP",
-                    tokens=map_tokens,
-                    reasons=["Structural overview and framework summary"],
+            if estimate_tokens(full_map_sec) <= map_budget:
+                map_sec = full_map_sec
+            else:
+                low = 0
+                high = len(retrieved.repo_map_summary)
+                best_map = ""
+                while low <= high:
+                    mid = (low + high) // 2
+                    cand = f"{map_header}{retrieved.repo_map_summary[:mid]}{map_suffix}"
+                    if estimate_tokens(cand) <= map_budget:
+                        best_map = cand
+                        low = mid + 1
+                    else:
+                        high = mid - 1
+                map_sec = best_map or f"{map_header}{map_suffix}"
+
+            if current_tokens_with(map_sec) <= self.max_tokens:
+                sections.append(map_sec)
+                map_tokens = estimate_tokens(map_sec)
+                included.append(
+                    ContextItemManifest(
+                        path="REPOSITORY_MAP",
+                        tokens=map_tokens,
+                        reasons=["Structural overview and framework summary"],
+                        is_test=False,
+                    )
                 )
-            )
 
-        # 3. Source and Test Files by score priority
-        impl_files = [f for f in retrieved.scored_files if not f.is_test]
-        test_files = [f for f in retrieved.scored_files if f.is_test]
+        # 3. Source and Test Files ordered strictly by relevance score
+        # Both implementation files and test files are included according to their scores and reasons
+        candidate_queue = sorted(
+            retrieved.scored_files,
+            key=lambda f: (-f.score, f.relative_path),
+        )
 
-        # Prioritize implementation files first, then tests
-        candidate_queue = impl_files + test_files
-
-        for file_ctx in candidate_queue:
-            file_tokens = estimate_tokens(file_ctx.content)
+        candidate_count = len(candidate_queue)
+        for idx, file_ctx in enumerate(candidate_queue):
             reasons_str = ", ".join(file_ctx.reasons)
+            file_header = f"=== FILE: {file_ctx.relative_path} (Relevance: {file_ctx.score:g} | {reasons_str}) ===\nFile: {file_ctx.relative_path}\n"
+            full_file_sec = f"{file_header}{file_ctx.content}"
+            curr_used = current_tokens_with()
+            avail = self.max_tokens - curr_used
 
-            if remaining_budget <= 50:
+            if avail <= 20:
                 excluded.append(
                     ContextItemManifest(
                         path=file_ctx.relative_path,
-                        tokens=file_tokens,
+                        tokens=estimate_tokens(file_ctx.content),
                         reasons=["Budget ceiling reached; omitted"],
                         score=file_ctx.score,
+                        is_test=file_ctx.is_test,
                     )
                 )
                 continue
 
-            # If file fits entirely in remaining budget
-            if file_tokens <= remaining_budget:
-                sections.append(
-                    f"=== FILE: {file_ctx.relative_path} (Relevance: {file_ctx.score:g} | {reasons_str}) ===\n"
-                    f"File: {file_ctx.relative_path}\n"
-                    f"{file_ctx.content}"
-                )
-                remaining_budget -= file_tokens
+            # Fair-share budget allocation: prevent earlier files from starving subsequent files
+            remaining_files = candidate_count - idx
+            fair_share = max(120, avail // remaining_files)
+            budget_limit_for_file = min(self.max_tokens, curr_used + fair_share)
+
+            # If full section fits in total assembled prompt budget and within fair share
+            if current_tokens_with(full_file_sec) <= budget_limit_for_file:
+                sections.append(full_file_sec)
+                item_tok = current_tokens_with() - curr_used
                 included.append(
                     ContextItemManifest(
                         path=file_ctx.relative_path,
-                        tokens=file_tokens,
+                        tokens=item_tok,
                         reasons=file_ctx.reasons,
                         score=file_ctx.score,
+                        is_test=file_ctx.is_test,
                     )
                 )
             else:
-                # File is partially included if we have at least 150 tokens
-                if remaining_budget >= 150:
-                    take_chars = (remaining_budget - 20) * 4
-                    truncated_content = file_ctx.content[:take_chars] + f"\n... (truncated: {len(file_ctx.content)} total chars)"
-                    part_tokens = estimate_tokens(truncated_content)
-                    sections.append(
-                        f"=== FILE: {file_ctx.relative_path} (Relevance: {file_ctx.score:g} | {reasons_str} | Truncated) ===\n"
-                        f"File: {file_ctx.relative_path}\n"
-                        f"{truncated_content}"
-                    )
-                    included.append(
-                        ContextItemManifest(
-                            path=file_ctx.relative_path,
-                            tokens=part_tokens,
-                            reasons=file_ctx.reasons + ["Truncated to fit remaining context budget"],
-                            score=file_ctx.score,
+                # Partial inclusion if sufficient room remains for header + content snippet
+                trunc_header = f"=== FILE: {file_ctx.relative_path} (Relevance: {file_ctx.score:g} | {reasons_str} | Truncated) ===\nFile: {file_ctx.relative_path}\n"
+                trunc_suffix = f"\n... (truncated: {len(file_ctx.content)} total chars)"
+                min_cand = f"{trunc_header}{trunc_suffix}"
+
+                if current_tokens_with(min_cand) + 10 <= budget_limit_for_file:
+                    low = 0
+                    high = len(file_ctx.content)
+                    best_sec = None
+                    while low <= high:
+                        mid = (low + high) // 2
+                        cand_content = file_ctx.content[:mid]
+                        cand_sec = f"{trunc_header}{cand_content}{trunc_suffix}"
+                        if current_tokens_with(cand_sec) <= budget_limit_for_file:
+                            best_sec = cand_sec
+                            low = mid + 1
+                        else:
+                            high = mid - 1
+
+                    if best_sec is not None:
+                        sections.append(best_sec)
+                        item_tok = current_tokens_with() - curr_used
+                        included.append(
+                            ContextItemManifest(
+                                path=file_ctx.relative_path,
+                                tokens=item_tok,
+                                reasons=file_ctx.reasons + ["Truncated to fit remaining context budget"],
+                                score=file_ctx.score,
+                                is_test=file_ctx.is_test,
+                            )
                         )
-                    )
-                    remaining_budget -= part_tokens
+                    else:
+                        excluded.append(
+                            ContextItemManifest(
+                                path=file_ctx.relative_path,
+                                tokens=estimate_tokens(file_ctx.content),
+                                reasons=["Insufficient remaining token budget"],
+                                score=file_ctx.score,
+                                is_test=file_ctx.is_test,
+                            )
+                        )
                 else:
                     excluded.append(
                         ContextItemManifest(
                             path=file_ctx.relative_path,
-                            tokens=file_tokens,
+                            tokens=estimate_tokens(file_ctx.content),
                             reasons=["Insufficient remaining token budget"],
                             score=file_ctx.score,
+                            is_test=file_ctx.is_test,
                         )
                     )
 
         prompt_text = "\n\n".join(sections)
-        used_tokens = self.max_tokens - remaining_budget
+        # Strict hard enforcement: ensure total assembled prompt never exceeds max_tokens
+        while prompt_text and estimate_tokens(prompt_text) > self.max_tokens:
+            prompt_text = prompt_text[:-4].rstrip()
+
+        used_tokens = estimate_tokens(prompt_text)
 
         manifest = ContextManifest(
             budget_tokens=self.max_tokens,

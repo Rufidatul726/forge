@@ -146,6 +146,22 @@ class ContextRetrievalEngine:
                         file_scores[test_p] += 25.0
                         file_reasons[test_p].append(f"Associated test file for {impl_path}")
 
+        # Fallback for generic or non-keyword tasks: include top entry-point files
+        if not file_scores and inventory.files:
+            ENTRY_NAMES = {
+                "main.py", "app.py", "index.ts", "index.js", "readme.md",
+                "pyproject.toml", "package.json",
+            }
+            for f in inventory.files:
+                name_lower = Path(f.relative_path).name.lower()
+                if name_lower in ENTRY_NAMES:
+                    file_scores[f.relative_path] += 20.0
+                    file_reasons[f.relative_path].append("Repository entry point")
+            if not file_scores:
+                for f in inventory.files[:5]:
+                    file_scores[f.relative_path] += 10.0
+                    file_reasons[f.relative_path].append("Workspace file")
+
         # Rank and select top files
         ranked_paths = sorted(
             file_scores.keys(),
@@ -172,10 +188,12 @@ class ContextRetrievalEngine:
             except Exception:
                 continue
 
+        repo_map_combined = f"{repo_map.summary_text}\n{repo_map.tree_text}" if repo_map.tree_text else repo_map.summary_text
+
         return RetrievedContext(
             task=task_text,
             instructions=instructions,
-            repo_map_summary=repo_map.summary_text,
+            repo_map_summary=repo_map_combined,
             scored_files=scored_contexts,
             git_modified_files=git_modified,
         )

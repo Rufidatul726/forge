@@ -240,16 +240,13 @@ class RepoScanner:
             truncated=truncated,
         )
 
-    def _compute_file_sha256(self, path: Path, size_bytes: int) -> str:
+    def _compute_file_sha256(self, path: Path, size_bytes: int = 0) -> str:
+        """Compute the streaming SHA-256 hash of the complete file."""
         hasher = hashlib.sha256()
         try:
             with path.open("rb") as f:
-                bytes_read = 0
                 while chunk := f.read(65536):
-                    bytes_read += len(chunk)
                     hasher.update(chunk)
-                    if bytes_read > self.max_file_bytes:
-                        break
         except OSError:
             return ""
         return hasher.hexdigest()
