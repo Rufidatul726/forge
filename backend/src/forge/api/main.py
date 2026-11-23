@@ -60,6 +60,7 @@ def create_app(settings: ForgeSettings | None = None) -> FastAPI:
         protected_path = request.url.path in {
             "/api/v1/generate",
             "/api/v1/agent/tasks",
+            "/api/v1/agent/tasks/stream",
             "/api/v1/sessions",
         } or request.url.path.startswith("/api/v1/sessions/")
         if request.method != "OPTIONS" and protected_path:

@@ -60,6 +60,9 @@ function App() {
   const [apiKey, setApiKey] = useState(configuredApiKey)
   const [workspaceError, setWorkspaceError] = useState<string | null>(null)
   const [running, setRunning] = useState(false)
+  const [streaming, setStreaming] = useState(false)
+  const [streamingContent, setStreamingContent] = useState('')
+  const [streamResponse, setStreamResponse] = useState(false)
   const taskController = useRef<AbortController | null>(null)
 
   useEffect(() => {
@@ -174,7 +177,7 @@ function App() {
         body: JSON.stringify({ title: 'New chat' }),
       })) as SessionSummary
       const detail = (await apiFetch(`/sessions/${summary.id}`)) as SessionDetail
-      setSessions((current) => [summary, ...current])
+      setSessions((current) => [summary, ...current.filter((s) => s.id !== summary.id)])
       setActiveSession(detail)
       setView('sessions')
     } catch (requestError) {
@@ -224,26 +227,129 @@ function App() {
         sessionId = summary.id
       }
 
-      await apiFetch('/agent/tasks', {
-        method: 'POST',
-        signal: controller.signal,
-        body: JSON.stringify({
-          model,
-          messages: [{ role: 'user', content }],
-          context_paths: contextPaths
-            .split(',')
-            .map((path) => path.trim())
-            .filter(Boolean)
-            .slice(0, 10),
-          session_id: sessionId,
-          max_tokens: 1024,
-        }),
-      })
+      const paths = contextPaths
+        .split(',')
+        .map((path) => path.trim())
+        .filter(Boolean)
+        .slice(0, 10)
 
-      setPrompt('')
-      await selectSession(sessionId)
-      void fetchSessions()
+      if (streamResponse) {
+        setStreaming(true)
+        setStreamingContent('')
+        const response = await fetch(`${apiBaseUrl}/agent/tasks/stream`, {
+          method: 'POST',
+          signal: controller.signal,
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${apiKey}`,
+          },
+          body: JSON.stringify({
+            model,
+            messages: [{ role: 'user', content }],
+            context_paths: paths,
+            session_id: sessionId,
+            max_tokens: 1024,
+          }),
+        })
+
+        if (!response.ok) {
+          let message = 'Could not run the streaming task.'
+          try {
+            const payload = (await response.json()) as { error?: { message?: string } }
+            if (payload.error?.message) message = payload.error.message
+          } catch {
+            // Keep safe fallback for non-JSON responses.
+          }
+          throw new Error(message)
+        }
+
+        const reader = response.body?.getReader()
+        const decoder = new TextDecoder()
+        if (reader) {
+          let buffer = ''
+
+          const processSseBlock = (block: string) => {
+            const trimmed = block.trim()
+            if (!trimmed) return
+            let event = ''
+            let data = ''
+            for (const rawLine of trimmed.split(/\r?\n/)) {
+              const line = rawLine.trim()
+              if (!line || line.startsWith(':')) continue
+              if (line.startsWith('event:')) {
+                event = line.slice(6).trim()
+              } else if (line.startsWith('data:')) {
+                const val = line.slice(5).trim()
+                data = data ? `${data}\n${val}` : val
+              }
+            }
+            if (event === 'error') {
+              let errorMsg = 'Streaming failed.'
+              if (data) {
+                try {
+                  const payload = JSON.parse(data) as { error?: { message?: string } }
+                  if (payload.error?.message) errorMsg = payload.error.message
+                } catch {
+                  // Fallback to default
+                }
+              }
+              throw new Error(errorMsg)
+            }
+            if (data) {
+              try {
+                const payload = JSON.parse(data) as { content?: string; done?: boolean }
+                if (payload.content) {
+                  setStreamingContent((prev) => prev + payload.content)
+                }
+              } catch {
+                // Keep going on partial or non-JSON data
+              }
+            }
+          }
+
+          while (true) {
+            const { done, value } = await reader.read()
+            if (done) break
+            buffer += decoder.decode(value, { stream: true })
+            const blocks = buffer.split(/\r?\n\r?\n/)
+            buffer = blocks.pop() ?? ''
+            for (const block of blocks) {
+              processSseBlock(block)
+            }
+          }
+          buffer += decoder.decode()
+          if (buffer.trim()) {
+            const remaining = buffer.split(/\r?\n\r?\n/)
+            for (const block of remaining) {
+              processSseBlock(block)
+            }
+          }
+        }
+        await selectSession(sessionId)
+        setStreaming(false)
+        setStreamingContent('')
+        setPrompt('')
+        void fetchSessions()
+      } else {
+        await apiFetch('/agent/tasks', {
+          method: 'POST',
+          signal: controller.signal,
+          body: JSON.stringify({
+            model,
+            messages: [{ role: 'user', content }],
+            context_paths: paths,
+            session_id: sessionId,
+            max_tokens: 1024,
+          }),
+        })
+
+        setPrompt('')
+        await selectSession(sessionId)
+        void fetchSessions()
+      }
     } catch (requestError) {
+      setStreaming(false)
+      setStreamingContent('')
       if (controller.signal.aborted) {
         setWorkspaceError('Task cancelled.')
       } else {
@@ -257,6 +363,8 @@ function App() {
 
   function cancelTask() {
     taskController.current?.abort()
+    setStreaming(false)
+    setStreamingContent('')
   }
 
   return (
@@ -425,7 +533,14 @@ function App() {
                     <p>{turn.content}</p>
                   </article>
                 ))}
-                {!activeSession?.turns.length && (
+                {streaming && (
+                  <article className="message assistant streaming">
+                    <span>Forge</span>
+                    <p>{streamingContent}</p>
+                    <span className="typing-indicator">Responding…</span>
+                  </article>
+                )}
+                {!activeSession?.turns.length && !streaming && (
                   <div className="chat-empty">
                     <span className="chat-empty-mark">F</span>
                     <h2>Ask about your workspace</h2>
@@ -443,6 +558,14 @@ function App() {
                   <label className="context-input">
                     Context files
                     <input value={contextPaths} onChange={(event) => setContextPaths(event.target.value)} placeholder="src/main.py, README.md" />
+                  </label>
+                  <label className="stream-checkbox">
+                    <input
+                      type="checkbox"
+                      checked={streamResponse}
+                      onChange={(event) => setStreamResponse(event.target.checked)}
+                    />
+                    Stream
                   </label>
                 </div>
                 <div className="prompt-row">

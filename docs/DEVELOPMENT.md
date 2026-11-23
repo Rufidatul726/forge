@@ -51,9 +51,9 @@ The built-in rate limiter is a process-local sliding window keyed by the direct 
 uv run --project backend forge models
 ```
 
-All provider adapters use a 30-second timeout, limit response bodies to 2 MiB, and cap each generation request at 8,192 tokens. Authenticated generation is available at `POST /api/v1/generate`; the CLI prompt workflow and agent loop are not connected to it yet.
+All provider adapters use a 30-second timeout, limit response bodies to 2 MiB, and cap each generation request at 8,192 tokens. Authenticated generation is available at `POST /api/v1/generate`.
 
-To enable the initial read-only API task workflow, set `AGENT_WORKSPACE_ROOT` to the repository directory on the server. The API never accepts a workspace root from the caller. Requests can include up to 10 safe, workspace-relative context paths; they cannot write files or execute commands.
+To enable read-only API task workflows, set `AGENT_WORKSPACE_ROOT` to the repository directory on the server. The API supports both synchronous tasks (`POST /api/v1/agent/tasks`) and real-time Server-Sent Events streaming (`POST /api/v1/agent/tasks/stream`). The frontend provides a "Stream" toggle to stream responses with live typing indicators. Requests can include up to 10 safe, workspace-relative context paths; they cannot write files or execute commands.
 
 Sessions use SQLite at `<AGENT_WORKSPACE_ROOT>/.forge/sessions.sqlite3`; no additional database service or environment variable is required. Use `forge sessions create --workspace .`, `forge sessions list --workspace .`, `forge sessions show <id> --workspace .`, and `forge sessions delete <id> --workspace .` to manage the same sessions used by the API. The delete command asks for confirmation.
 

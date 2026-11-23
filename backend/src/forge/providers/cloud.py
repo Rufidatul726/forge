@@ -1,5 +1,5 @@
 import json
-from collections.abc import Mapping
+from collections.abc import AsyncIterator, Mapping
 from typing import Any
 
 import httpx
@@ -11,7 +11,7 @@ from forge.providers.errors import (
     ProviderTimeoutError,
     ProviderUnavailableError,
 )
-from forge.providers.models import GenerationRequest, GenerationResult
+from forge.providers.models import GenerationChunk, GenerationRequest, GenerationResult
 from forge.providers.ollama import (
     DEFAULT_MAX_RESPONSE_BYTES,
     DEFAULT_TIMEOUT_SECONDS,
@@ -162,6 +162,88 @@ class GeminiProvider(_CloudProvider):
             raise ProviderResponseError
         return GenerationResult(model=request.model, content=text, done=True)
 
+    async def stream_generate(
+        self, request: GenerationRequest
+    ) -> AsyncIterator[GenerationChunk]:
+        contents: list[dict[str, Any]] = []
+        system_parts: list[dict[str, str]] = []
+        for message in request.messages:
+            part = {"text": message.content}
+            if message.role == "system":
+                system_parts.append(part)
+            else:
+                contents.append(
+                    {"role": "model" if message.role == "assistant" else "user", "parts": [part]}
+                )
+
+        payload: dict[str, Any] = {
+            "contents": contents,
+            "generationConfig": {"maxOutputTokens": request.max_tokens},
+        }
+        if system_parts:
+            payload["systemInstruction"] = {"parts": system_parts}
+
+        try:
+            async with httpx.AsyncClient(
+                base_url=self._base_url,
+                timeout=self._timeout,
+                transport=self._transport,
+            ) as client:
+                async with client.stream(
+                    "POST",
+                    f"/v1beta/models/{request.model}:streamGenerateContent?alt=sse",
+                    headers={"x-goog-api-key": self._api_key},
+                    json=payload,
+                ) as response:
+                    if response.status_code >= 400:
+                        raise ProviderRequestError
+                    total_bytes = 0
+                    async for line in response.aiter_lines():
+                        line = line.strip()
+                        if not line:
+                            continue
+                        line_bytes = len(line.encode("utf-8"))
+                        total_bytes += line_bytes
+                        if total_bytes > self._max_response_bytes:
+                            raise ProviderResponseTooLargeError
+                        if not line.startswith("data:"):
+                            continue
+                        data_str = line.removeprefix("data:").strip()
+                        if not data_str:
+                            continue
+                        try:
+                            data = json.loads(data_str)
+                        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+                            raise ProviderResponseError from exc
+                        if not isinstance(data, Mapping):
+                            raise ProviderResponseError
+                        if "error" in data:
+                            raise ProviderRequestError
+                        candidates = data.get("candidates")
+                        if isinstance(candidates, list) and candidates:
+                            candidate = candidates[0]
+                            if isinstance(candidate, Mapping):
+                                content = candidate.get("content")
+                                if isinstance(content, Mapping):
+                                    parts = content.get("parts")
+                                    if isinstance(parts, list):
+                                        text = "".join(
+                                            p.get("text", "")
+                                            for p in parts
+                                            if isinstance(p, Mapping)
+                                        )
+                                        if text:
+                                            yield GenerationChunk(
+                                                content=text,
+                                                done=False,
+                                                model=request.model,
+                                            )
+                    yield GenerationChunk(content="", done=True, model=request.model)
+        except httpx.TimeoutException as exc:
+            raise ProviderTimeoutError from exc
+        except httpx.RequestError as exc:
+            raise ProviderUnavailableError from exc
+
 
 class OpenRouterProvider(_CloudProvider):
     name = "openrouter"
@@ -216,3 +298,74 @@ class OpenRouterProvider(_CloudProvider):
         if not isinstance(content, str) or not content or not isinstance(model, str):
             raise ProviderResponseError
         return GenerationResult(model=model, content=content, done=True)
+
+    async def stream_generate(
+        self, request: GenerationRequest
+    ) -> AsyncIterator[GenerationChunk]:
+        payload = {
+            "model": request.model,
+            "messages": [message.model_dump() for message in request.messages],
+            "max_tokens": request.max_tokens,
+            "stream": True,
+        }
+        try:
+            async with httpx.AsyncClient(
+                base_url=self._base_url,
+                timeout=self._timeout,
+                transport=self._transport,
+            ) as client:
+                async with client.stream(
+                    "POST",
+                    "/chat/completions",
+                    headers=self._headers,
+                    json=payload,
+                ) as response:
+                    if response.status_code >= 400:
+                        raise ProviderRequestError
+                    total_bytes = 0
+                    has_sent_done = False
+                    async for line in response.aiter_lines():
+                        line = line.strip()
+                        if not line:
+                            continue
+                        line_bytes = len(line.encode("utf-8"))
+                        total_bytes += line_bytes
+                        if total_bytes > self._max_response_bytes:
+                            raise ProviderResponseTooLargeError
+                        if not line.startswith("data:"):
+                            continue
+                        data_str = line.removeprefix("data:").strip()
+                        if not data_str:
+                            continue
+                        if data_str == "[DONE]":
+                            has_sent_done = True
+                            yield GenerationChunk(content="", done=True, model=request.model)
+                            break
+                        try:
+                            data = json.loads(data_str)
+                        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+                            raise ProviderResponseError from exc
+                        if not isinstance(data, Mapping):
+                            raise ProviderResponseError
+                        if "error" in data:
+                            raise ProviderRequestError
+                        choices = data.get("choices")
+                        if isinstance(choices, list) and choices:
+                            choice = choices[0]
+                            if isinstance(choice, Mapping):
+                                delta = choice.get("delta")
+                                if isinstance(delta, Mapping):
+                                    text = delta.get("content")
+                                    if isinstance(text, str) and text:
+                                        model = data.get("model", request.model)
+                                        yield GenerationChunk(
+                                            content=text,
+                                            done=False,
+                                            model=model,
+                                        )
+                    if not has_sent_done:
+                        yield GenerationChunk(content="", done=True, model=request.model)
+        except httpx.TimeoutException as exc:
+            raise ProviderTimeoutError from exc
+        except httpx.RequestError as exc:
+            raise ProviderUnavailableError from exc

@@ -33,12 +33,13 @@ The API owns browser-facing contracts and CORS. Provider/model execution, reposi
 
 The provider adapters are `OllamaProvider`, `GeminiProvider`, and `OpenRouterProvider`:
 
-- Ollama reads the server-only `OLLAMA_HOST` setting and uses `/api/tags` to list installed models and `/api/chat` for non-streaming generation.
+- Ollama reads the server-only `OLLAMA_HOST` setting and uses `/api/tags` to list installed models and `/api/chat` for non-streaming and streaming generation.
 - Gemini uses the server-only `GEMINI_API_KEY` with the Gemini REST API; OpenRouter uses the server-only `OPENROUTER_API_KEY` with its OpenAI-compatible REST API.
+- All adapters implement `list_models()`, `generate()`, and `stream_generate()` yielding `GenerationChunk` objects.
 - Requests have a 30-second timeout, generation is capped at 8,192 tokens, and response bodies are limited to 2 MiB.
 - Network, timeout, HTTP, malformed response, and oversized response failures map to typed provider errors without returning upstream response bodies.
 - Cancellation is not swallowed.
-- `forge models` exercises model discovery for configured providers. `POST /api/v1/generate` exposes bounded generation behind a bearer API key; the CLI prompt workflow and agent loop are not connected to it yet.
+- `forge models` exercises model discovery for configured providers. `POST /api/v1/generate` exposes bounded generation behind a bearer API key; `POST /api/v1/agent/tasks` and `POST /api/v1/agent/tasks/stream` expose bounded agent tasks with session persistence.
 
 Provider API keys must remain server-side and must not be included in logs or frontend responses.
 
@@ -94,6 +95,25 @@ Requires `Authorization: Bearer <FORGE_API_KEY>`. The configured key must be at 
 Requires `Authorization: Bearer <FORGE_API_KEY>` and a server-configured `AGENT_WORKSPACE_ROOT`. The request accepts a model, 1-32 provider-neutral chat messages, an output limit, and up to 10 workspace-relative context paths. The service builds bounded, read-only context from the configured workspace and sends it to the selected provider. It returns the generation result, configured workspace root, context paths, and `read_only: true`. It does not accept arbitrary filesystem roots, write files, execute commands, persist sessions, or stream output.
 
 When `session_id` is supplied, the route restores the saved conversation before generation and records the new turns, assistant reply, and generation metadata after success. It remains read-only with respect to project files.
+
+### `POST /api/v1/agent/tasks/stream`
+
+Requires `Authorization: Bearer <FORGE_API_KEY>` and a server-configured `AGENT_WORKSPACE_ROOT`. Accepts the same request body as `POST /api/v1/agent/tasks`. Returns a `text/event-stream` Server-Sent Events stream.
+
+Stream events follow this protocol:
+- Intermediate token events: `data: {"content": "text chunk", "done": false, "model": "..."}\n\n`
+- Terminal completion event: `data: {"content": "", "done": true, "model": "...", "session_id": "..."}\n\n`
+- Error events: `event: error\ndata: {"error": {"code": "...", "message": "..."}}\n\n`
+
+When `session_id` is provided, user turns, completed assistant text, and generation outcome are committed to SQLite session storage upon stream completion.
+
+### Deployment topology
+
+Forge is structured for single-tenant or isolated team environments:
+- **Standalone local container**: Docker Compose or single container running both backend and frontend, with the target workspace mounted into `/workspace` and `AGENT_WORKSPACE_ROOT=/workspace`.
+- **Single-tenant container service**: Backend container running behind a TLS reverse proxy (Caddy/Nginx) enforcing HTTPS, with volume-mounted storage for `.forge/sessions.sqlite3`.
+- **Secret management**: Secrets (`FORGE_API_KEY`, provider API keys) must be injected via runtime environment variables or container secret managers (e.g., Docker secrets, Kubernetes secrets), never committed in `.env.local` or built into container images.
+- **Rate limiting at edge**: For multi-instance deployments, process-local rate limiting should be complemented by a shared edge rate limiter (e.g. Cloudflare, Nginx `limit_req`, or Redis-backed API gateway).
 
 ### Session endpoints
 

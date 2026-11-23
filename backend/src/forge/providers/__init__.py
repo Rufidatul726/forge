@@ -9,6 +9,7 @@ from forge.providers.errors import (
 )
 from forge.providers.cloud import GeminiProvider, OpenRouterProvider
 from forge.providers.ollama import OllamaProvider
+from forge.providers.models import GenerationChunk, GenerationRequest, GenerationResult
 from forge.providers.protocol import ModelProvider
 
 
@@ -31,6 +32,9 @@ def get_provider(name: str, settings: ForgeSettings | None = None) -> ModelProvi
 
 __all__ = [
     "GeminiProvider",
+    "GenerationChunk",
+    "GenerationRequest",
+    "GenerationResult",
     "ModelProvider",
     "OllamaProvider",
     "OpenRouterProvider",

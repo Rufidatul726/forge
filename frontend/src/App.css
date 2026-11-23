@@ -645,6 +645,36 @@
   padding: 12px 14px;
 }
 
+.message.streaming {
+  border-color: #3a3d2f;
+  background: #1a1d16;
+}
+
+.typing-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 8px;
+  color: #85868e;
+  font-family: var(--mono);
+  font-size: 10px;
+}
+
+.typing-indicator::before {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: typing-pulse 1.2s ease-in-out infinite;
+  content: '';
+}
+
+@keyframes typing-pulse {
+  0%, 100% { opacity: 0.3; }
+  50% { opacity: 1; }
+}
+
 .message p {
   margin: 7px 0 0;
   color: #c9cacf;
@@ -694,9 +724,29 @@
 
 .prompt-options {
   display: grid;
-  grid-template-columns: 220px 1fr;
+  grid-template-columns: 200px 1fr auto;
+  align-items: end;
   gap: 10px;
   margin-bottom: 8px;
+}
+
+.stream-checkbox {
+  display: flex !important;
+  flex-direction: row !important;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  color: #85868e;
+  font-family: var(--mono);
+  font-size: 11px;
+  padding-bottom: 8px;
+}
+
+.stream-checkbox input {
+  width: 14px;
+  height: 14px !important;
+  accent-color: var(--accent);
+  cursor: pointer;
 }
 
 .prompt-options label,

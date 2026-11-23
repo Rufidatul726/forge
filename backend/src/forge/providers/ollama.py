@@ -1,5 +1,5 @@
 import json
-from collections.abc import Mapping
+from collections.abc import AsyncIterator, Mapping
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -12,7 +12,7 @@ from forge.providers.errors import (
     ProviderTimeoutError,
     ProviderUnavailableError,
 )
-from forge.providers.models import GenerationRequest, GenerationResult
+from forge.providers.models import GenerationChunk, GenerationRequest, GenerationResult
 
 DEFAULT_TIMEOUT_SECONDS = 30.0
 DEFAULT_MAX_RESPONSE_BYTES = 2 * 1024 * 1024
@@ -98,6 +98,59 @@ class OllamaProvider:
             raise ProviderResponseError
 
         return GenerationResult(model=model, content=content, done=done)
+
+    async def stream_generate(
+        self, request: GenerationRequest
+    ) -> AsyncIterator[GenerationChunk]:
+        payload = {
+            "model": request.model,
+            "messages": [message.model_dump() for message in request.messages],
+            "stream": True,
+            "options": {"num_predict": request.max_tokens},
+        }
+        try:
+            async with httpx.AsyncClient(
+                base_url=self._base_url,
+                timeout=self._timeout,
+                transport=self._transport,
+            ) as client:
+                async with client.stream("POST", "/api/chat", json=payload) as response:
+                    if response.status_code >= 400:
+                        raise ProviderRequestError
+                    total_bytes = 0
+                    has_sent_done = False
+                    async for line in response.aiter_lines():
+                        if not line.strip():
+                            continue
+                        line_bytes = len(line.encode("utf-8"))
+                        total_bytes += line_bytes
+                        if total_bytes > self._max_response_bytes:
+                            raise ProviderResponseTooLargeError
+                        try:
+                            item = json.loads(line)
+                        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+                            raise ProviderResponseError from exc
+                        if not isinstance(item, Mapping):
+                            raise ProviderResponseError
+                        if "error" in item:
+                            raise ProviderRequestError
+                        message = item.get("message")
+                        content = ""
+                        if isinstance(message, Mapping):
+                            text = message.get("content")
+                            if isinstance(text, str):
+                                content = text
+                        model = item.get("model", request.model)
+                        done = bool(item.get("done", False))
+                        if done:
+                            has_sent_done = True
+                        yield GenerationChunk(content=content, done=done, model=model)
+                    if not has_sent_done:
+                        yield GenerationChunk(content="", done=True, model=request.model)
+        except httpx.TimeoutException as exc:
+            raise ProviderTimeoutError from exc
+        except httpx.RequestError as exc:
+            raise ProviderUnavailableError from exc
 
     async def _request_json(
         self,

@@ -21,6 +21,12 @@ class GenerationRequest(BaseModel):
         return value.strip()
 
 
+class GenerationChunk(BaseModel):
+    content: str
+    done: bool
+    model: str | None = None
+
+
 class GenerationResult(BaseModel):
     model: str
     content: str

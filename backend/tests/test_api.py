@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import re
 from collections.abc import Mapping
@@ -574,3 +575,219 @@ def test_openapi_documents_error_contracts(app: FastAPI):
     )
     assert generation["security"] == [{"ForgeBearer": []}]
     assert "ForgeBearer" in schema["components"]["securitySchemes"]
+
+
+def test_agent_tasks_stream_sse_success_and_persists_session(monkeypatch, tmp_path):
+    from forge.providers.models import GenerationChunk
+    from forge.sessions import SessionStore
+
+    (tmp_path / "main.py").write_text("print('hello')", encoding="utf-8")
+    store = SessionStore(tmp_path)
+    session = store.create("Streaming chat")
+
+    class FakeStreamingProvider:
+        async def stream_generate(self, payload):
+            yield GenerationChunk(content="Streamed ", done=False, model=payload.model)
+            yield GenerationChunk(content="answer.", done=True, model=payload.model)
+
+    monkeypatch.setattr("forge.api.routes.agent.get_provider", lambda name, settings: FakeStreamingProvider())
+    api_key = "a" * 40
+    app = create_app(
+        ForgeSettings(
+            _env_file=None,
+            forge_api_key=api_key,
+            agent_workspace_root=tmp_path,
+        )
+    )
+
+    response = request(
+        app,
+        "POST",
+        "/api/v1/agent/tasks/stream",
+        headers={"Authorization": f"Bearer {api_key}"},
+        json_body={
+            "model": "qwen2.5-coder:7b",
+            "messages": [{"role": "user", "content": "Explain main.py"}],
+            "context_paths": ["main.py"],
+            "session_id": session.id,
+        },
+    )
+
+    assert response.status_code == 200
+    assert "text/event-stream" in response.headers["content-type"]
+    lines = response.text.strip().split("\n\n")
+    events = [json.loads(line.removeprefix("data: ").strip()) for line in lines if line.startswith("data: ")]
+    assert len(events) == 3
+    assert events[0]["content"] == "Streamed "
+    assert events[0]["done"] is False
+    assert events[1]["content"] == "answer."
+    assert events[1]["done"] is False
+    assert events[2]["content"] == ""
+    assert events[2]["done"] is True
+    assert events[2]["session_id"] == session.id
+
+    # Check turns persisted
+    saved = store.get(session.id)
+    assert len(saved.turns) == 2
+    assert saved.turns[0].content == "Explain main.py"
+    assert saved.turns[1].content == "Streamed answer."
+
+
+def test_agent_tasks_stream_auth_and_config_validation(tmp_path):
+    api_key = "a" * 40
+    payload = {
+        "model": "qwen2.5-coder:7b",
+        "messages": [{"role": "user", "content": "Hello"}],
+    }
+    unconfigured = request(
+        create_app(ForgeSettings(_env_file=None, forge_api_key=api_key)),
+        "POST",
+        "/api/v1/agent/tasks/stream",
+        headers={"Authorization": f"Bearer {api_key}"},
+        json_body=payload,
+    )
+    unauthorized = request(
+        create_app(
+            ForgeSettings(
+                _env_file=None,
+                forge_api_key=api_key,
+                agent_workspace_root=tmp_path,
+            )
+        ),
+        "POST",
+        "/api/v1/agent/tasks/stream",
+        json_body=payload,
+    )
+
+    assert unconfigured.status_code == 503
+    assert unauthorized.status_code == 401
+
+
+def test_agent_tasks_stream_rejects_outside_path(tmp_path):
+    api_key = "a" * 40
+    app = create_app(
+        ForgeSettings(
+            _env_file=None,
+            forge_api_key=api_key,
+            agent_workspace_root=tmp_path,
+        )
+    )
+    response = request(
+        app,
+        "POST",
+        "/api/v1/agent/tasks/stream",
+        headers={"Authorization": f"Bearer {api_key}"},
+        json_body={
+            "model": "qwen2.5-coder:7b",
+            "messages": [{"role": "user", "content": "Read outside"}],
+            "context_paths": ["../outside.txt"],
+        },
+    )
+    assert response.status_code == 422
+
+
+def test_agent_tasks_stream_session_not_found(tmp_path):
+    api_key = "a" * 40
+    app = create_app(
+        ForgeSettings(
+            _env_file=None,
+            forge_api_key=api_key,
+            agent_workspace_root=tmp_path,
+        )
+    )
+    response = request(
+        app,
+        "POST",
+        "/api/v1/agent/tasks/stream",
+        headers={"Authorization": f"Bearer {api_key}"},
+        json_body={
+            "model": "qwen2.5-coder:7b",
+            "messages": [{"role": "user", "content": "Hello"}],
+            "session_id": "f" * 32,
+        },
+    )
+    assert response.status_code == 404
+
+
+def test_agent_tasks_stream_fallback_non_streaming_provider(monkeypatch, tmp_path):
+    from forge.providers.models import GenerationResult
+
+    (tmp_path / "main.py").write_text("print('hello')", encoding="utf-8")
+
+    class FakeNonStreamingProvider:
+        async def generate(self, payload):
+            return GenerationResult(
+                model=payload.model,
+                content="Non-streaming answer.",
+                done=True,
+            )
+
+    monkeypatch.setattr("forge.api.routes.agent.get_provider", lambda name, settings: FakeNonStreamingProvider())
+    api_key = "a" * 40
+    app = create_app(
+        ForgeSettings(
+            _env_file=None,
+            forge_api_key=api_key,
+            agent_workspace_root=tmp_path,
+        )
+    )
+
+    response = request(
+        app,
+        "POST",
+        "/api/v1/agent/tasks/stream",
+        headers={"Authorization": f"Bearer {api_key}"},
+        json_body={
+            "model": "qwen2.5-coder:7b",
+            "messages": [{"role": "user", "content": "Explain main.py"}],
+            "context_paths": ["main.py"],
+        },
+    )
+
+    assert response.status_code == 200
+    lines = response.text.strip().split("\n\n")
+    events = [json.loads(line.removeprefix("data: ").strip()) for line in lines if line.startswith("data: ")]
+    assert len(events) == 2
+    assert events[0]["content"] == "Non-streaming answer."
+    assert events[0]["done"] is False
+    assert events[1]["content"] == ""
+    assert events[1]["done"] is True
+
+
+def test_agent_tasks_stream_emits_error_event_on_provider_error(monkeypatch, tmp_path):
+    from forge.providers.errors import ProviderUnavailableError
+
+    (tmp_path / "main.py").write_text("print('hello')", encoding="utf-8")
+
+    class FailingStreamingProvider:
+        async def stream_generate(self, payload):
+            if True:
+                raise ProviderUnavailableError
+            yield None
+
+    monkeypatch.setattr("forge.api.routes.agent.get_provider", lambda name, settings: FailingStreamingProvider())
+    api_key = "a" * 40
+    app = create_app(
+        ForgeSettings(
+            _env_file=None,
+            forge_api_key=api_key,
+            agent_workspace_root=tmp_path,
+        )
+    )
+
+    response = request(
+        app,
+        "POST",
+        "/api/v1/agent/tasks/stream",
+        headers={"Authorization": f"Bearer {api_key}"},
+        json_body={
+            "model": "qwen2.5-coder:7b",
+            "messages": [{"role": "user", "content": "Explain main.py"}],
+            "context_paths": ["main.py"],
+        },
+    )
+
+    assert response.status_code == 200
+    assert "event: error" in response.text
+    assert "provider_unavailable" in response.text
+    assert "The configured model provider is unavailable." in response.text

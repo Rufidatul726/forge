@@ -1,10 +1,16 @@
+from collections.abc import AsyncIterator
 from pathlib import Path
 
 from pydantic import BaseModel, Field, field_validator
 
 from forge.context import Workspace, WorkspaceError
 from forge.providers import ModelProvider
-from forge.providers.models import ChatMessage, GenerationRequest, GenerationResult
+from forge.providers.models import (
+    ChatMessage,
+    GenerationChunk,
+    GenerationRequest,
+    GenerationResult,
+)
 
 MAX_CONTEXT_FILES = 10
 MAX_CONTEXT_FILE_CHARS = 12_000
@@ -64,6 +70,32 @@ class AgentService:
             workspace_root=str(self._workspace.root),
             context_paths=task.context_paths,
         )
+
+    async def stream(
+        self, task: AgentTaskRequest, *, context: str | None = None
+    ) -> AsyncIterator[GenerationChunk]:
+        if context is None:
+            context = self._build_context(task.context_paths)
+        system_message = ChatMessage(
+            role="system",
+            content=(
+                "You are Forge, a read-only repository assistant. Answer using the supplied "
+                "workspace context when relevant. Do not claim to have modified files, run "
+                "commands, or inspected files that are not included in the context.\n\n"
+                f"{context}"
+            ),
+        )
+        request = GenerationRequest(
+            model=task.model,
+            messages=[system_message, *task.messages],
+            max_tokens=task.max_tokens,
+        )
+        if hasattr(self._provider, "stream_generate"):
+            async for chunk in self._provider.stream_generate(request):
+                yield chunk
+        else:
+            result = await self._provider.generate(request)
+            yield GenerationChunk(content=result.content, done=True, model=result.model)
 
     def _build_context(self, context_paths: list[str]) -> str:
         discovered = self._workspace.discover_context(file_limit=200)

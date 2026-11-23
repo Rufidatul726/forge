@@ -235,3 +235,204 @@ def test_openrouter_lists_models_and_generates_with_bearer_key():
     )
     assert result.content == "Hi there."
     assert result.done is True
+
+
+def test_ollama_stream_generate():
+    def respond(request: httpx.Request) -> httpx.Response:
+        assert request.method == "POST"
+        assert request.url.path == "/api/chat"
+        payload = json.loads(request.content)
+        assert payload["stream"] is True
+        ndjson = (
+            json.dumps({"model": "qwen2.5-coder:7b", "message": {"content": "Hello "}, "done": False})
+            + "\n"
+            + json.dumps({"model": "qwen2.5-coder:7b", "message": {"content": "world!"}, "done": True})
+            + "\n"
+        )
+        return httpx.Response(200, text=ndjson)
+
+    provider_instance = provider(respond)
+
+    async def collect():
+        chunks = []
+        async for chunk in provider_instance.stream_generate(
+            GenerationRequest(
+                model="qwen2.5-coder:7b",
+                messages=[ChatMessage(role="user", content="Hi")],
+                max_tokens=64,
+            )
+        ):
+            chunks.append(chunk)
+        return chunks
+
+    chunks = asyncio.run(collect())
+    assert len(chunks) == 2
+    assert chunks[0].content == "Hello "
+    assert chunks[0].done is False
+    assert chunks[1].content == "world!"
+    assert chunks[1].done is True
+
+
+def test_ollama_stream_too_large():
+    def respond(request: httpx.Request) -> httpx.Response:
+        line = json.dumps({"model": "m", "message": {"content": "x" * 200}, "done": False}) + "\n"
+        return httpx.Response(200, text=line * 10)
+
+    provider_instance = provider(respond, max_response_bytes=100)
+
+    async def collect():
+        async for _ in provider_instance.stream_generate(
+            GenerationRequest(
+                model="m",
+                messages=[ChatMessage(role="user", content="Hi")],
+                max_tokens=64,
+            )
+        ):
+            pass
+
+    with pytest.raises(ProviderResponseTooLargeError):
+        asyncio.run(collect())
+
+
+def test_gemini_stream_generate():
+    def respond(request: httpx.Request) -> httpx.Response:
+        assert "streamGenerateContent" in request.url.path
+        sse = (
+            'data: {"candidates": [{"content": {"parts": [{"text": "Gemini "}],"role": "model"}}]}\n\n'
+            'data: {"candidates": [{"content": {"parts": [{"text": "stream"}],"role": "model"}}]}\n\n'
+        )
+        return httpx.Response(200, text=sse)
+
+    provider_instance = gemini_provider(respond)
+
+    async def collect():
+        chunks = []
+        async for chunk in provider_instance.stream_generate(
+            GenerationRequest(
+                model="gemini-2.5-pro",
+                messages=[ChatMessage(role="user", content="Hi")],
+                max_tokens=64,
+            )
+        ):
+            chunks.append(chunk)
+        return chunks
+
+    chunks = asyncio.run(collect())
+    assert len(chunks) == 3
+    assert chunks[0].content == "Gemini "
+    assert chunks[0].done is False
+    assert chunks[1].content == "stream"
+    assert chunks[1].done is False
+    assert chunks[2].done is True
+
+
+def test_openrouter_stream_generate():
+    def respond(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/v1/chat/completions"
+        payload = json.loads(request.content)
+        assert payload["stream"] is True
+        sse = (
+            'data: {"choices": [{"delta": {"content": "OpenRouter "}}]}\n\n'
+            'data: {"choices": [{"delta": {"content": "streaming"}}]}\n\n'
+            "data: [DONE]\n\n"
+        )
+        return httpx.Response(200, text=sse)
+
+    provider_instance = openrouter_provider(respond)
+
+    async def collect():
+        chunks = []
+        async for chunk in provider_instance.stream_generate(
+            GenerationRequest(
+                model="openai/gpt-4.1-mini",
+                messages=[ChatMessage(role="user", content="Hi")],
+                max_tokens=64,
+            )
+        ):
+            chunks.append(chunk)
+        return chunks
+
+    chunks = asyncio.run(collect())
+    assert len(chunks) == 3
+    assert chunks[0].content == "OpenRouter "
+    assert chunks[0].done is False
+    assert chunks[1].content == "streaming"
+    assert chunks[1].done is False
+    assert chunks[2].done is True
+
+
+@pytest.mark.parametrize("status_code", [400, 401, 404, 500])
+def test_stream_http_errors_raise_provider_request_error(status_code: int):
+    def respond(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(status_code, text="sensitive upstream text")
+
+    ollama = provider(respond)
+    gemini = gemini_provider(respond)
+    openrouter = openrouter_provider(respond)
+
+    async def consume(p):
+        async for _ in p.stream_generate(
+            GenerationRequest(
+                model="test-model",
+                messages=[ChatMessage(role="user", content="Hi")],
+            )
+        ):
+            pass
+
+    for p in (ollama, gemini, openrouter):
+        with pytest.raises(ProviderRequestError) as exc_info:
+            asyncio.run(consume(p))
+        assert "sensitive upstream text" not in exc_info.value.public_message
+
+
+@pytest.mark.parametrize(
+    ("provider_factory", "body"),
+    [
+        (provider, '{"error":"upstream failure"}\n'),
+        (gemini_provider, 'data: {"error":{"message":"upstream failure"}}\n\n'),
+        (openrouter_provider, 'data: {"error":{"message":"upstream failure"}}\n\n'),
+    ],
+)
+def test_stream_error_payloads_raise_provider_request_error(provider_factory, body: str):
+    def respond(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text=body)
+
+    provider_instance = provider_factory(respond)
+
+    async def consume():
+        async for _ in provider_instance.stream_generate(
+            GenerationRequest(
+                model="test-model",
+                messages=[ChatMessage(role="user", content="Hi")],
+            )
+        ):
+            pass
+
+    with pytest.raises(ProviderRequestError):
+        asyncio.run(consume())
+
+
+def test_ollama_stream_yields_terminal_chunk_if_not_sent():
+    def respond(_request: httpx.Request) -> httpx.Response:
+        ndjson = json.dumps({"model": "m", "message": {"content": "hello"}, "done": False}) + "\n"
+        return httpx.Response(200, text=ndjson)
+
+    provider_instance = provider(respond)
+
+    async def collect():
+        chunks = []
+        async for chunk in provider_instance.stream_generate(
+            GenerationRequest(
+                model="m",
+                messages=[ChatMessage(role="user", content="Hi")],
+            )
+        ):
+            chunks.append(chunk)
+        return chunks
+
+    chunks = asyncio.run(collect())
+    assert len(chunks) == 2
+    assert chunks[0].content == "hello"
+    assert chunks[0].done is False
+    assert chunks[1].content == ""
+    assert chunks[1].done is True

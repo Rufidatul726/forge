@@ -2,7 +2,7 @@
 
 **Your code. Your models. Your agent.**
 
-Forge is an early-stage, model-agnostic coding agent project with a Python backend, a separate React web frontend, and a terminal CLI. The dashboard reports API/provider status, and the frontend provides a read-only chat workflow backed by persistent sessions.
+Forge is an early-stage, model-agnostic coding agent project with a Python backend, a separate React web frontend, and a terminal CLI. The dashboard reports API/provider status, and the frontend provides a read-only chat workflow with real-time SSE streaming backed by persistent sessions.
 
 ## Project layout
 
@@ -97,7 +97,7 @@ uv run --project backend forge diff .
 
 `forge run` allows only `git`, `npm`, `node`, `python`, `python3`, `pytest`, `ruff`, and `uv`. It displays the resolved executable, exact arguments, working directory, and timeout, then requires confirmation (default: no) for each invocation. It does not invoke a shell; execution has a timeout and bounded output, and only a small environment-variable allowlist is inherited. This is an approval gate, not an OS sandbox: an approved program runs as the current user and can access resources permitted to that account.
 
-Ollama, Gemini, and OpenRouter support bounded, non-streaming text generation through the backend provider interface and authenticated API. Set `DEFAULT_MODEL` to `ollama`, `gemini`, or `openrouter` to select the generation provider. `forge -p ...` runs a bounded, read-only repository task and persists it to a local session. Workspace mutations and autonomous tool loops are not enabled.
+Ollama, Gemini, and OpenRouter support bounded text generation and real-time streaming through the backend provider interface and authenticated API. Set `DEFAULT_MODEL` to `ollama`, `gemini`, or `openrouter` to select the generation provider. `POST /api/v1/agent/tasks/stream` streams responses via Server-Sent Events, and the web UI supports real-time streaming responses with typing indicators. `forge -p ...` runs a bounded, read-only repository task and persists it to a local session. Workspace mutations and autonomous tool loops are not enabled.
 
 ## API endpoints
 
@@ -108,6 +108,7 @@ Ollama, Gemini, and OpenRouter support bounded, non-streaming text generation th
 | `GET` | `/api/v1/providers` | Read the default model and provider configuration status |
 | `POST` | `/api/v1/generate` | Generate a bounded response using the configured provider |
 | `POST` | `/api/v1/agent/tasks` | Run a read-only repository task in the configured workspace |
+| `POST` | `/api/v1/agent/tasks/stream` | Stream a read-only repository task via Server-Sent Events |
 | `POST` | `/api/v1/sessions` | Create a persistent workspace session |
 | `GET` | `/api/v1/sessions` | List persistent workspace sessions |
 | `GET` | `/api/v1/sessions/{session_id}` | Read a saved session, turns, and outcomes |
