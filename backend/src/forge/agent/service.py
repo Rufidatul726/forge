@@ -16,6 +16,8 @@ from forge.agent.registry import (
 from forge.context import CheckpointManager, Workspace
 from forge.context.workspace import WriteProposal
 from forge.execution import CommandProposal, CommandRunner
+from forge.intelligence.context import TokenBudgetBuilder
+from forge.intelligence.retrieval import ContextRetrievalEngine
 from forge.providers import ModelProvider
 from forge.providers.models import (
     ChatMessage,
@@ -101,7 +103,7 @@ class AgentService:
             raise ValueError(f"Agent steps must be between 1 and {MAX_AGENT_STEPS}")
 
         active_policy = policy_config or ExecutionPolicyConfig(policy=policy)
-        context = self._build_context(task.context_paths)
+        context = self._build_context(task.context_paths, task_text=self._extract_task_text(task))
         task_id = task.session_id or uuid4().hex
 
         context_obj = ToolExecutionContext(
@@ -231,7 +233,7 @@ class AgentService:
         )
 
     async def run(self, task: AgentTaskRequest) -> AgentTaskResult:
-        context = self._build_context(task.context_paths)
+        context = self._build_context(task.context_paths, task_text=self._extract_task_text(task))
         system_message = ChatMessage(
             role="system",
             content=(
@@ -259,7 +261,7 @@ class AgentService:
         self, task: AgentTaskRequest, *, context: str | None = None
     ) -> AsyncIterator[GenerationChunk]:
         if context is None:
-            context = self._build_context(task.context_paths)
+            context = self._build_context(task.context_paths, task_text=self._extract_task_text(task))
         system_message = ChatMessage(
             role="system",
             content=(
@@ -317,7 +319,21 @@ class AgentService:
             return None
         return ToolCall(name=name, arguments=dict(arguments))
 
-    def _build_context(self, context_paths: list[str], max_token_budget: int = 6000) -> str:
+    def _extract_task_text(self, task: AgentTaskRequest) -> str:
+        return " ".join(
+            m.content for m in task.messages if m.role == "user" and m.content
+        )
+
+    def _build_context(
+        self,
+        context_paths: list[str],
+        max_token_budget: int = 6000,
+        task_text: str | None = None,
+    ) -> str:
+        # Validate all explicit context_paths upfront to reject outside paths
+        for p in context_paths:
+            self._workspace._resolve_file(p)
+
         discovered = self._workspace.discover_context(file_limit=200)
         char_budget = max_token_budget * 4
 
@@ -338,9 +354,19 @@ class AgentService:
         used_chars = sum(len(s) for s in sections)
         remaining_chars = max(0, char_budget - used_chars)
 
-        if context_paths and remaining_chars > 0:
-            per_file_chars = max(500, remaining_chars // len(context_paths))
-            for path in context_paths:
+        # Context paths to include: explicit ones if provided, or retrieved ones via intelligence
+        effective_paths = list(context_paths)
+        if not effective_paths and task_text:
+            try:
+                retrieval = ContextRetrievalEngine(self._workspace.root, workspace=self._workspace)
+                retrieved = retrieval.retrieve(task_text, max_source_files=5)
+                effective_paths = [f.relative_path for f in retrieved.scored_files if not f.is_test]
+            except Exception:
+                effective_paths = []
+
+        if effective_paths and remaining_chars > 0:
+            per_file_chars = max(500, remaining_chars // len(effective_paths))
+            for path in effective_paths:
                 if remaining_chars <= 0:
                     break
                 content = self._workspace.read_text(path)

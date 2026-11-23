@@ -64,7 +64,7 @@ class TokenBudgetBuilder:
                 inst_text = inst_text[:chars_limit] + "\n... (truncated for budget)"
                 inst_tokens = estimate_tokens(inst_text)
 
-            sections.append(f"=== PROJECT INSTRUCTIONS ===\n{inst_text}")
+            sections.append(f"=== PROJECT INSTRUCTIONS ===\nProject instructions:\n{inst_text}")
             remaining_budget -= inst_tokens
             included.append(
                 ContextItemManifest(
@@ -120,6 +120,7 @@ class TokenBudgetBuilder:
             if file_tokens <= remaining_budget:
                 sections.append(
                     f"=== FILE: {file_ctx.relative_path} (Relevance: {file_ctx.score:g} | {reasons_str}) ===\n"
+                    f"File: {file_ctx.relative_path}\n"
                     f"{file_ctx.content}"
                 )
                 remaining_budget -= file_tokens
@@ -139,6 +140,7 @@ class TokenBudgetBuilder:
                     part_tokens = estimate_tokens(truncated_content)
                     sections.append(
                         f"=== FILE: {file_ctx.relative_path} (Relevance: {file_ctx.score:g} | {reasons_str} | Truncated) ===\n"
+                        f"File: {file_ctx.relative_path}\n"
                         f"{truncated_content}"
                     )
                     included.append(
