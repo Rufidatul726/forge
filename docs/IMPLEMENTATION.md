@@ -29,7 +29,7 @@ This document is the implementation checklist and handoff point for the project.
 
 ### Not implemented yet
 
-- [ ] Autonomous agent execution loop with user-approved tool mutations.
+- [x] Autonomous agent execution loop with user-approved tool mutations.
 - [x] Connect the CLI prompt runner to the read-only agent service and persistent sessions.
 - [x] Add SQLite session persistence, listing, resume, and safe deletion.
 - [x] Persist project change history after approved workspace writes are connected to sessions.
@@ -37,7 +37,7 @@ This document is the implementation checklist and handoff point for the project.
 - [x] Frontend automated tests and end-to-end component coverage.
 - [ ] User identity authentication/authorization (OAuth/OIDC) and multi-instance distributed observability.
 
-Ollama, Gemini, and OpenRouter adapters support model listing, non-streaming generation, and streaming token generation. `POST /api/v1/generate` exposes bounded generation behind `FORGE_API_KEY`; `POST /api/v1/agent/tasks` and `POST /api/v1/agent/tasks/stream` provide read-only repository task workflows with session persistence. `forge -p` runs the guarded read-only service locally and persists turns. Autonomous tool loops and mutations remain follow-up work.
+Ollama, Gemini, and OpenRouter adapters support model listing, non-streaming generation, and streaming token generation. `POST /api/v1/generate` exposes bounded generation behind `FORGE_API_KEY`; `POST /api/v1/agent/tasks` and `POST /api/v1/agent/tasks/stream` provide read-only repository task workflows with session persistence. `forge -p` runs the guarded read-only service locally and persists turns. `forge -p "..." --agent` enables a bounded CLI tool loop for reads, approved writes, and approved allowlisted commands; HTTP task endpoints remain read-only.
 
 ## Recommended implementation sequence
 

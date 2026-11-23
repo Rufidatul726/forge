@@ -42,6 +42,7 @@ def main(
     model: str | None = typer.Option(None, "--model", help="Select a model provider."),
     plan: bool = typer.Option(False, "--plan", help="Start in planning mode."),
     continue_session: bool = typer.Option(False, "--continue", help="Resume the previous session."),
+    agent: bool = typer.Option(False, "--agent", help="Allow a bounded tool loop with per-action approval."),
 ) -> None:
     if ctx.invoked_subcommand is not None:
         return
@@ -94,15 +95,42 @@ def main(
                 summary = store.create(prompt[:120])
                 session_id = summary.id
 
-            result = asyncio.run(
-                AgentService(root, provider).run(
-                    AgentTaskRequest(
-                        model=model_name,
-                        messages=task_messages,
-                        max_tokens=1024,
+            task = AgentTaskRequest(
+                model=model_name,
+                messages=task_messages,
+                max_tokens=1024,
+            )
+            agent_service = AgentService(root, provider)
+            if agent:
+                def approve_write(proposal: WriteProposal) -> bool:
+                    console.print(
+                        Panel(
+                            Text(proposal.diff or "No changes to apply."),
+                            title=f"Proposed change: {proposal.path}",
+                            border_style="yellow",
+                        )
+                    )
+                    return typer.confirm("Apply this exact change?", default=False)
+
+                def approve_command(proposal: CommandProposal) -> bool:
+                    console.print("[yellow]Command permission required[/]")
+                    console.print(Text(f"Executable: {proposal.executable_path}", overflow="fold"))
+                    console.print("Arguments:")
+                    for index, argument in enumerate(proposal.argv):
+                        console.print(Text(f"  [{index}] {argument!r}", overflow="fold"))
+                    console.print(Text(f"Working directory: {proposal.working_directory}", overflow="fold"))
+                    console.print(f"Timeout: {proposal.timeout_seconds:g}s")
+                    return typer.confirm("Run this exact command?", default=False)
+
+                result = asyncio.run(
+                    agent_service.run_autonomous(
+                        task,
+                        approve_write=approve_write,
+                        approve_command=approve_command,
                     )
                 )
-            )
+            else:
+                result = asyncio.run(agent_service.run(task))
             store.append_turns(
                 session_id,
                 [ChatMessage(role="user", content=prompt)],
@@ -116,9 +144,18 @@ def main(
                 "generation",
                 {"model": result.generation.model, "done": result.generation.done},
             )
+            for outcome in result.tool_outcomes:
+                store.append_outcome(
+                    session_id,
+                    "agent_tool",
+                    {
+                        "name": outcome.name,
+                        "ok": outcome.ok,
+                    },
+                )
             console.print(result.generation.content, markup=False)
             console.print(f"[dim]Session: {session_id}[/]")
-        except (ProviderError, WorkspaceError, SessionNotFoundError, ValueError) as error:
+        except (ProviderError, WorkspaceError, CommandError, SessionNotFoundError, ValueError) as error:
             message = getattr(error, "public_message", str(error))
             console.print(f"[red]Could not run prompt:[/] {message}")
             raise typer.Exit(code=1) from error

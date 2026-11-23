@@ -40,6 +40,28 @@ def test_prompt_runs_read_only_agent_task_and_persists_session(tmp_path, monkeyp
     assert "Session:" in result.stdout
 
 
+def test_agent_prompt_runs_bounded_agent_loop(tmp_path, monkeypatch):
+    (tmp_path / "main.py").write_text("print('hello')\n", encoding="utf-8")
+
+    class FakeProvider:
+        async def generate(self, payload):
+            from forge.providers.models import GenerationResult
+
+            return GenerationResult(
+                model=payload.model,
+                content="The repository entry point prints hello.",
+                done=True,
+            )
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("forge.cli.get_provider", lambda name, settings: FakeProvider())
+    result = runner.invoke(app, ["-p", "Explain main.py", "--agent"])
+
+    assert result.exit_code == 0
+    assert "The repository entry point prints hello." in result.stdout
+    assert "Session:" in result.stdout
+
+
 def test_diff_outside_repository(tmp_path):
     result = runner.invoke(app, ["diff", str(tmp_path)])
     assert result.exit_code == 1

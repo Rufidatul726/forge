@@ -1,3 +1,15 @@
-from forge.agent.service import AgentService, AgentTaskRequest, AgentTaskResult
+from forge.agent.service import (
+    AgentService,
+    AgentTaskRequest,
+    AgentTaskResult,
+    AgentToolCall,
+    AgentToolOutcome,
+)
 
-__all__ = ["AgentService", "AgentTaskRequest", "AgentTaskResult"]
+__all__ = [
+    "AgentService",
+    "AgentTaskRequest",
+    "AgentTaskResult",
+    "AgentToolCall",
+    "AgentToolOutcome",
+]
