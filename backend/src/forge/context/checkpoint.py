@@ -1,4 +1,5 @@
 import hashlib
+import hmac
 import json
 import logging
 import os
@@ -6,6 +7,7 @@ import re
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path, PureWindowsPath
+from typing import Any
 
 from forge.context.workspace import (
     Workspace,
@@ -17,6 +19,19 @@ logger = logging.getLogger("forge.checkpoint")
 
 TASK_ID_REGEX = re.compile(r"^[A-Za-z0-9_-]+$")
 MAX_TASK_ID_LENGTH = 128
+CURRENT_CHECKPOINT_VERSION = 1
+
+
+def compute_canonical_payload_checksum(data: dict[str, Any]) -> str:
+    """Compute deterministic SHA-256 checksum over checkpoint payload excluding checksum field.
+
+    NOTE: An unkeyed SHA-256 checksum detects accidental corruption or accidental payload truncation,
+    but does not authenticate against a malicious local attacker who can recalculate the hash.
+    For authenticated integrity, an HMAC key must be stored outside the workspace/.forge directory.
+    """
+    clean = {k: v for k, v in data.items() if k != "payload_checksum"}
+    canonical = json.dumps(clean, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 @dataclass
@@ -34,6 +49,8 @@ class TaskCheckpoint:
     task_id: str
     created_at: float = field(default_factory=time.time)
     snapshots: dict[str, FileSnapshot] = field(default_factory=dict)
+    version: int = CURRENT_CHECKPOINT_VERSION
+    payload_checksum: str | None = None
 
 
 @dataclass
@@ -163,6 +180,14 @@ class CheckpointManager:
             if not isinstance(data, dict) or data.get("task_id") != task_id:
                 logger.warning("Checkpoint %s has invalid data or mismatched task_id", path)
                 return None
+
+            payload_checksum = data.get("payload_checksum")
+            if payload_checksum is not None:
+                expected_checksum = compute_canonical_payload_checksum(data)
+                if not hmac.compare_digest(payload_checksum, expected_checksum):
+                    logger.warning("Checkpoint %s payload checksum mismatch (tampered or corrupted)", path)
+                    return None
+
             raw_snapshots = data.get("snapshots")
             if not isinstance(raw_snapshots, dict):
                 logger.warning("Checkpoint %s has invalid snapshots map", path)
@@ -175,6 +200,8 @@ class CheckpointManager:
                 task_id=data["task_id"],
                 created_at=float(data.get("created_at", 0.0)),
                 snapshots=snapshots,
+                version=int(data.get("version", CURRENT_CHECKPOINT_VERSION)),
+                payload_checksum=payload_checksum,
             )
         except Exception as exc:
             logger.warning("Could not read checkpoint %s: %s", path, exc)
@@ -322,8 +349,10 @@ class CheckpointManager:
         self.checkpoints_dir.mkdir(parents=True, exist_ok=True)
         path = self._get_checkpoint_path(checkpoint.task_id)
         data = {
+            "version": checkpoint.version or CURRENT_CHECKPOINT_VERSION,
             "task_id": checkpoint.task_id,
             "created_at": checkpoint.created_at,
             "snapshots": {p: asdict(s) for p, s in checkpoint.snapshots.items()},
         }
+        data["payload_checksum"] = compute_canonical_payload_checksum(data)
         path.write_text(json.dumps(data, indent=2), encoding="utf-8")

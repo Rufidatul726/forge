@@ -620,3 +620,36 @@ async def test_plan_mode_dispatcher_blocks_mutations_and_commands(tmp_path: Path
     )
     assert res_cmd.ok is False
     assert "not permitted in plan mode" in res_cmd.content
+
+
+def test_checkpoint_payload_checksum_and_version(tmp_path: Path):
+    mgr = CheckpointManager(tmp_path)
+    task_id = "task-checksum-version"
+    file_path = tmp_path / "hello.py"
+    file_path.write_text("orig\n", encoding="utf-8")
+
+    mgr.record_pre_change(task_id, "hello.py", "orig\n")
+    mgr.record_post_change(task_id, "hello.py", "new\n")
+
+    cp = mgr.get_checkpoint(task_id)
+    assert cp is not None
+    assert cp.version == 1
+    assert cp.payload_checksum is not None
+
+    # Checkpoint JSON on disk contains canonical payload_checksum and version
+    cp_file = tmp_path / ".forge" / "checkpoints" / f"{task_id}.json"
+    data = json.loads(cp_file.read_text(encoding="utf-8"))
+    assert data["version"] == 1
+    assert data["payload_checksum"] == cp.payload_checksum
+
+    # Tamper with the checkpoint payload data without updating payload_checksum
+    data["created_at"] = 999999.0
+    cp_file.write_text(json.dumps(data), encoding="utf-8")
+
+    # get_checkpoint detects the corrupted/tampered payload checksum and rejects it
+    assert mgr.get_checkpoint(task_id) is None
+
+    # Rollback safely handles tampered checkpoint without error or corrupting workspace
+    res = mgr.rollback(task_id)
+    assert not res.restored
+
