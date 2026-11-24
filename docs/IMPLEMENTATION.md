@@ -62,6 +62,22 @@ This document is the implementation checklist and handoff point for the project.
 - [x] Typer CLI research commands: `forge research <query>`, `forge research fetch <url>`, `forge research show <id>`, `forge research sources <id>`, and `forge research cache`.
 - [x] Authenticated read-only HTTP API endpoints (`POST /api/v1/research`, `GET /api/v1/research/{id}`, `GET /api/v1/research/{id}/sources`).
 - [x] Complete automated test suite with 100% mocked external network interactions and green M1-M3 regression suite.
+- [x] Research security and reliability hardening (Forge M4.1):
+  - [x] Bounded streaming HTTP retrieval with real-time byte count enforcement and early content-type rejection.
+  - [x] Stream decompression safety enforcing size limits on actual delivered application bytes against compression bombs.
+  - [x] Stream and socket cleanup guaranteed across success, failure, timeout, and cancellation.
+  - [x] Comprehensive SSRF protection blocking private, loopback, link-local, multicast, and cloud metadata IPs (AWS, Azure, Alibaba).
+  - [x] DNS pinning in SafeHTTPTransport via SafeNetworkBackend, eliminating the TOCTOU DNS rebinding window.
+  - [x] Manual redirect validation with hop bounding (max 5), loop cycle detection, cross-origin sensitive header stripping, and Referer downgrade defense.
+  - [x] Preservation of full TLS SNI and CA certificate verification; zero-keepalive connection pooling to prevent pooled reuse of unsafe destinations.
+  - [x] Robust structural prompt-injection defenses: escaping raw angles and tags, defanging chat role markers (`<|im_start|>`, `[INST]`), tool call spoofing (`<forge_tool_call>`), and metadata sanitization.
+  - [x] Traceable evidence excerpts with exact character slice offsets (`start_offset:end_offset`) preserved across truncation.
+  - [x] Citation validation with offset verification; unverified keyword matches explicitly marked `is_verified=False`.
+  - [x] Multi-source conflict detection identifying version divergences and deprecation warnings.
+  - [x] Persistent cache hardening preventing storage of failed, errored, or empty retrievals.
+  - [x] Automatic stripping of API keys and credentials from URLs prior to database and cache storage.
+  - [x] Transactional database rollback preventing partial report persistence.
+  - [x] Safe SQLite database recovery requiring `PRAGMA integrity_check` verification and protecting M3 repository index data.
 
 ### Not implemented yet
 

@@ -121,7 +121,9 @@ class Citation(BaseModel):
     retrieval_date: str
     relevant_excerpt: str
     section_heading: str | None = None
-    is_verified: bool = True
+    start_offset: int | None = None
+    end_offset: int | None = None
+    is_verified: bool = False
 
 
 class ResearchFinding(BaseModel):

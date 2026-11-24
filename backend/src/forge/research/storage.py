@@ -7,6 +7,7 @@ from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Iterator
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from forge.config import forge_directory
 from forge.research.models import (
@@ -23,6 +24,30 @@ from forge.research.models import (
 logger = logging.getLogger("forge.research.storage")
 
 CURRENT_SCHEMA_VERSION = 1
+
+SENSITIVE_URL_PARAMS = {
+    "api_key",
+    "apikey",
+    "access_token",
+    "token",
+    "secret",
+    "auth",
+    "password",
+    "key",
+}
+
+
+def sanitize_url_credentials(url: str) -> str:
+    """Strip embedded credentials and sensitive auth query params from stored URLs."""
+    if not url:
+        return ""
+    parsed = urlsplit(url.strip())
+    netloc = parsed.netloc.split("@")[-1]
+    filtered_params = [
+        (k, v) for k, v in parse_qsl(parsed.query, keep_blank_values=True)
+        if k.lower() not in SENSITIVE_URL_PARAMS
+    ]
+    return urlunsplit((parsed.scheme, netloc, parsed.path, urlencode(filtered_params), parsed.fragment))
 
 
 class ResearchStorageError(Exception):
@@ -54,6 +79,22 @@ class ResearchStore:
         finally:
             conn.close()
 
+    def _is_database_corrupted(self) -> bool:
+        if not self.db_path.exists():
+            return False
+        try:
+            conn = sqlite3.connect(str(self.db_path), timeout=5.0)
+            try:
+                cur = conn.execute("PRAGMA integrity_check;")
+                row = cur.fetchone()
+                return not (row and row[0] == "ok")
+            finally:
+                conn.close()
+        except sqlite3.DatabaseError:
+            return True
+        except Exception:
+            return False
+
     def _initialize(self) -> None:
         try:
             with self._connect() as conn:
@@ -74,21 +115,37 @@ class ResearchStore:
                     if current_version < 1:
                         self._apply_migration_v1(conn)
 
+                    # Ensure start_offset and end_offset exist in citations table
+                    try:
+                        conn.execute("ALTER TABLE citations ADD COLUMN start_offset INTEGER;")
+                    except sqlite3.OperationalError:
+                        pass
+                    try:
+                        conn.execute("ALTER TABLE citations ADD COLUMN end_offset INTEGER;")
+                    except sqlite3.OperationalError:
+                        pass
+
                     conn.execute("COMMIT;")
                 except Exception:
                     conn.execute("ROLLBACK;")
                     raise
         except sqlite3.DatabaseError as exc:
-            logger.error("Corrupted or invalid research database, attempting recovery: %s", exc)
-            self._recover_corrupted_database()
+            if self._is_database_corrupted():
+                logger.error("Corrupted research database detected by integrity check, attempting recovery: %s", exc)
+                self._recover_corrupted_database()
+            else:
+                logger.warning("Database error during init (not corrupt): %s", exc)
+                raise
 
     def _recover_corrupted_database(self) -> None:
         if self.db_path.exists():
-            backup_path = self.db_path.with_suffix(f".corrupt.{datetime.now(UTC).strftime('%Y%m%d%H%M%S')}")
+            backup_path = self.db_path.with_name(
+                f"{self.db_path.name}.corrupt.{datetime.now(UTC).strftime('%Y%m%d%H%M%S')}"
+            )
             try:
                 self.db_path.rename(backup_path)
-            except OSError:
-                pass
+            except OSError as exc:
+                logger.warning("Could not rename corrupted database: %s", exc)
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE;")
             try:
@@ -203,6 +260,8 @@ class ResearchStore:
                 relevant_excerpt TEXT NOT NULL,
                 section_heading TEXT,
                 is_verified INTEGER NOT NULL,
+                start_offset INTEGER,
+                end_offset INTEGER,
                 FOREIGN KEY (report_id) REFERENCES research_reports(id) ON DELETE CASCADE
             );
             """
@@ -240,6 +299,8 @@ class ResearchStore:
 
                 # 2. Save Sources and query_sources links
                 for rank_idx, s in enumerate(report.sources, start=1):
+                    clean_s_canonical = sanitize_url_credentials(s.canonical_url)
+                    clean_s_original = sanitize_url_credentials(s.original_url)
                     conn.execute(
                         """
                         INSERT OR REPLACE INTO research_sources
@@ -251,8 +312,8 @@ class ResearchStore:
                         """,
                         (
                             s.source_id,
-                            s.canonical_url,
-                            s.original_url,
+                            clean_s_canonical,
+                            clean_s_original,
                             s.page_title,
                             s.domain,
                             s.publication_or_modification_date,
@@ -326,24 +387,28 @@ class ResearchStore:
 
                 # 5. Save Citations
                 for cit in report.citations:
+                    clean_cit_url = sanitize_url_credentials(cit.canonical_url)
                     conn.execute(
                         """
                         INSERT OR REPLACE INTO citations
                         (id, report_id, source_id, source_title, canonical_url, domain,
-                         retrieval_date, relevant_excerpt, section_heading, is_verified)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                         retrieval_date, relevant_excerpt, section_heading, is_verified,
+                         start_offset, end_offset)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
                         """,
                         (
                             cit.citation_id,
                             report.research_id,
                             cit.source_id,
                             cit.source_title,
-                            cit.canonical_url,
+                            clean_cit_url,
                             cit.domain,
                             cit.retrieval_date,
                             cit.relevant_excerpt,
                             cit.section_heading,
                             1 if cit.is_verified else 0,
+                            cit.start_offset,
+                            cit.end_offset,
                         ),
                     )
 
@@ -473,7 +538,7 @@ class ResearchStore:
             cit_cursor = conn.execute(
                 """
                 SELECT id, source_id, source_title, canonical_url, domain, retrieval_date,
-                       relevant_excerpt, section_heading, is_verified
+                       relevant_excerpt, section_heading, is_verified, start_offset, end_offset
                 FROM citations
                 WHERE report_id = ?;
                 """,
@@ -492,6 +557,8 @@ class ResearchStore:
                         relevant_excerpt=cit_row[6],
                         section_heading=cit_row[7],
                         is_verified=bool(cit_row[8]),
+                        start_offset=cit_row[9] if len(cit_row) > 9 else None,
+                        end_offset=cit_row[10] if len(cit_row) > 10 else None,
                     )
                 )
 

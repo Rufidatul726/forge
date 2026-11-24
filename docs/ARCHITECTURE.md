@@ -241,20 +241,19 @@ Errors use this shape:
 
 `details` is omitted when it does not apply. The OpenAPI document references the shared error schema for route error responses.
 
-## Web research and evidence-grounded coding (Forge M4)
+## Web research and evidence-grounded coding (Forge M4 & M4.1)
 
-The research subsystem (`backend/src/forge/research/`) provides provider-neutral web research, documentation retrieval, deterministic ranking, content caching, and citation-backed evidence grounding without introducing external agent frameworks or mandatory paid APIs:
+The research subsystem (`backend/src/forge/research/`) provides provider-neutral web research, documentation retrieval, deterministic ranking, content caching, and citation-backed evidence grounding without introducing external agent frameworks or mandatory paid APIs. Forge M4.1 hardens the reliability, boundary defenses, and security guarantees across this subsystem:
 
-### 1. Bounded HTTP retrieval and security model (`fetcher.py`)
+### 1. Bounded HTTP retrieval and network security model (`fetcher.py`)
 
-`SafeDocumentFetcher` enforces strict boundaries against Server-Side Request Forgery (SSRF), DNS rebinding, and denial-of-service:
-- **Protocol restrictions**: Allows HTTP and HTTPS only. Rejects `file:`, `gopher:`, `ftp:`, `data:`, and `javascript:` schemes. Embedded credentials in URLs are rejected.
-- **SSRF defense & IP filtering**: Rejects `localhost`, local naming suffixes (`.local`, `.internal`, `.lan`, `.localhost`), and all private, loopback, link-local, multicast, and reserved IP ranges for both IPv4 and IPv6 (including IPv4-mapped IPv6 addresses, NAT64 prefixes, and documentation ranges).
-- **DNS rebinding prevention**: Uses a custom `SafeNetworkBackend` injected into `httpcore`. Hostnames are resolved to IP addresses and pre-validated against disallowed subnets; the TCP socket connects directly to the pre-validated IP address, eliminating the race window between name resolution and socket connection. Full TLS SNI and server hostname validation are preserved.
-- **Redirect security**: Disables automatic redirect following in `httpx`. The fetcher loops through redirects manually (up to a configurable maximum of 5), re-validating the target URL scheme, hostname, and resolved IP on every redirect hop. Sensitive headers are stripped when redirects transition across domains.
-- **Resource bounding**: Enforces connection (5s) and read (10s) timeouts, inspects `Content-Length` headers, streams response chunks, and aborts immediately if response payload exceeds the maximum response limit (default 2 MiB).
-- **Content type enforcement**: Permits only documentation and text MIME types (`text/html`, `application/xhtml+xml`, `text/plain`, `text/markdown`, `application/json`). Arbitrary binary files (executables, archives, media) are rejected.
-- **Error sanitization**: User-facing exceptions never leak internal network topology, private IPs, or internal subnets.
+`SafeDocumentFetcher` enforces strict boundaries against Server-Side Request Forgery (SSRF), DNS rebinding, resource exhaustion, and denial-of-service:
+- **Protocol restrictions**: Allows HTTP and HTTPS only. Rejects `file:`, `gopher:`, `ftp:`, `data:`, `ws:`, and `javascript:` schemes. Embedded credentials in URLs are rejected. URL whitespace and control characters are blocked.
+- **SSRF defense & IP filtering**: Rejects `localhost`, local naming suffixes (`.local`, `.internal`, `.lan`, `.home.arpa`, `.corp`, `.intra`, `.private`, `.test`, `.invalid`), cloud metadata hostnames (`metadata.google.internal`, `instance-data`), and all private, loopback, link-local, multicast, and reserved IP ranges for both IPv4 and IPv6 (including IPv4-mapped IPv6 addresses, NAT64 prefixes, and documentation ranges). Explicitly blocks cloud metadata IPs: AWS/GCP/OpenStack `169.254.169.254`, Azure WireServer `168.63.129.16`, and Alibaba `100.100.100.200`. Detects and normalizes non-standard numeric IP representations (integers, octal, hex, abbreviated IPv4).
+- **DNS rebinding prevention & DNS pinning**: Uses a dedicated `SafeHTTPTransport` with `SafeNetworkBackend` integrated with `httpcore.AsyncConnectionPool`. Hostnames are resolved to IP addresses and pre-validated against disallowed subnets; the TCP socket connects directly to the pre-validated IP address, eliminating the TOCTOU window between name resolution and socket connection. Connection pooling uses `max_keepalive_connections=0` to ensure no connection reuse bypasses validation. Full TLS SNI and server hostname validation are preserved. TLS certificate verification is never disabled.
+- **Redirect security**: Disables automatic redirect following in `httpx`. The fetcher loops through redirects manually (up to a configurable maximum of 5), re-validating the target URL scheme, hostname, and resolved IP on every redirect hop. Detects self-referential redirect loops. Sensitive headers (`Authorization`, `Proxy-Authorization`, `Cookie`, `Set-Cookie`, `X-Api-Key`, `X-Auth-Token`) are stripped when redirects transition across origins. Referrer headers enforce `no-referrer-when-downgrade` and origin-only cross-domain policies.
+- **Bounded streaming response limits**: Streams response bodies via `response.aiter_bytes()` instead of buffering full responses. Tracks delivered bytes in real time and immediately aborts the connection if the response exceeds `max_response_bytes` (default 2 MiB). Rejects unsupported content types before reading bodies. Inspects `Content-Length` headers as an early rejection optimization without trusting them as the only check. Decompresses streams safely chunk-by-chunk, enforcing size limits on actual uncompressed application bytes to defeat compression bombs. Wraps all streams in `try ... finally: await response.aclose()` to guarantee socket cleanup on success, failure, timeout, or cancellation.
+- **Limitations**: DNS pinning mitigates rebinding between resolution and socket connect, but cannot prevent attacks where a public DNS server legitimately points to external resources under the attacker's control that proxy to third parties, nor can it bypass corporate split-horizon DNS environments without custom resolver configuration.
 
 ### 2. Content extraction and normalization (`extraction.py`)
 
@@ -275,17 +274,19 @@ Provider-neutral web search interface (`SearchProvider` protocol):
 
 ### 4. Persistence and document cache (`storage.py`, `cache.py`)
 
-- **Persistent cache**: Stores retrieved documentation in `.forge/research.sqlite3` with configurable TTL expiration (default 7 days), maximum document count limits (default 500), and maximum total cache size limits (default 50 MB) using deterministic FIFO/oldest-first eviction.
-- **Transactional report storage**: Versioned schema migration (`schema_migrations`) managing atomic persistence of research queries (`research_queries`), sources (`research_sources`), join links (`research_query_sources`), evidence excerpts (`evidence_excerpts`), citations (`citations`), and research reports (`research_reports`).
-- **Resilience**: Operates in WAL mode with busy timeouts and automatic corruption recovery.
+- **Persistent cache**: Stores retrieved documentation in `.forge/research.sqlite3` with configurable TTL expiration (default 7 days), maximum document count limits (default 500), and maximum total cache size limits (default 50 MB) using deterministic FIFO/oldest-first eviction. Failed, errored, or empty fetches are never cached. Sensitive parameters and credentials in URLs are stripped before storage.
+- **Transactional report storage**: Versioned schema migration (`schema_migrations`) managing atomic persistence of research queries (`research_queries`), sources (`research_sources`), join links (`research_query_sources`), evidence excerpts (`evidence_excerpts`), citations (`citations`), and research reports (`research_reports`). Write operations are enclosed in explicit transactions; failures roll back completely without partial or orphaned data.
+- **Database integrity & resilience**: Operates in WAL mode with busy timeouts. Database recovery verifies actual corruption via `PRAGMA integrity_check` before initiating backup to `.corrupt.<timestamp>`, ensuring transient locks never overwrite a valid database. Does not alter or touch M3 repository index data.
+- **Credential hygiene**: Sensitive authentication query parameters (`api_key`, `token`, `secret`, `password`, `auth`) and embedded URL credentials are automatically stripped prior to writing to cache or database.
 
 ### 5. Ranking, deduplication, and evidence grounding (`ranking.py`, `citations.py`)
 
 - **Deterministic ranking**: Explainable multi-signal scoring: title keyword match (30%), heading keyword match (25%), content keyword density (20%), domain preference (25%), official documentation boost (15%), version matching (20% boost / -10% mismatch penalty), and reciprocal search rank.
-- **Deduplication**: Prunes duplicate sources using canonical URLs, normalized URL queries (stripping tracking parameters like `utm_*`), and SHA-256 content hashes.
-- **Verifiable citations**: Associates claims with stable identifiers (`src_1`, `src_2` / `[S1]`, `[S2]`). Citations require exact excerpt substrings found within retrieved sources and are validated before reports are generated.
-- **Structured findings**: Distinguishes verified facts, multi-source inferences, recommendations, unverified assumptions, and unresolved questions. Detects conflicting versions or documentation discrepancies across retrieved sources.
-- **Prompt-injection defense**: Wraps all external research evidence inside `<untrusted_evidence>` fences, neutralizes instruction override phrases (`[FILTERED_INSTRUCTION_OVERRIDE]`), and marks all research tools read-only.
+- **Deduplication**: Prunes duplicate sources using canonical URLs, normalized URL queries (stripping tracking parameters like `utm_*` and credentials), and SHA-256 content hashes.
+- **Verifiable citations & exact offsets**: Associates claims with stable identifiers (`src_1`, `src_2` / `[S1]`, `[S2]`). Excerpts are traceable to exact character offsets (`start_offset:end_offset`) within the source text, maintained accurately even when excerpts are bounded or truncated. Citations are verified against retrieved sources; offset mismatches and nonexistent excerpts are rejected.
+- **Structured findings**: Distinguishes verified facts from unverified source-backed statements (`inferences`), recommendations, and unverified assumptions. Without an LLM entailment verification step, claim support is explicitly marked unverified (`is_verified=False`). Detects conflicting versions and deprecation discrepancies across retrieved sources.
+- **Prompt-injection defense & structural boundaries**: Treats all retrieved web content as untrusted passive data. `escape_untrusted_content` applies structural escaping: escapes `<` and `>`, defangs fake closing delimiter tags (`</untrusted_evidence>`), chat template role markers (`<system>`, `<developer>`, `<|im_start|>`, `[INST]`, `<<SYS>>`), and spoofed tool calls (`<forge_tool_call>`). Sanitizes all metadata attributes (titles, URLs, headings).
+- **Limitations**: Prompt-injection defenses reduce risk through structural containment and delimiter escaping; they do not make an LLM immune to indirect prompt injection or adversarial content.
 
 ### 6. Agent integration and CLI
 

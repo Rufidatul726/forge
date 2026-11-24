@@ -25,6 +25,7 @@ from forge.research import (
     FetcherError,
     ResearchQuery,
     ResearchService,
+    escape_untrusted_content,
     format_evidence_for_prompt,
 )
 from forge.research.providers.base import SearchError
@@ -249,14 +250,18 @@ async def _handle_fetch_url(args: FetchUrlArgs, ctx: ToolExecutionContext) -> To
     try:
         service = ctx.research_service or ResearchService(ctx.workspace.root)
         doc = await service.fetch_url(args.url)
-        content_preview = doc.extracted_text[:args.max_chars]
+        content_preview = escape_untrusted_content(doc.extracted_text[:args.max_chars])
+        clean_title = escape_untrusted_content(doc.title)
+        clean_url = escape_untrusted_content(doc.canonical_url)
+        clean_domain = escape_untrusted_content(doc.domain)
+        clean_type = escape_untrusted_content(doc.content_type)
         formatted = (
-            f"Title: {doc.title}\n"
-            f"Canonical URL: {doc.canonical_url}\n"
-            f"Domain: {doc.domain}\n"
-            f"Content Type: {doc.content_type}\n"
+            f"Title: {clean_title}\n"
+            f"Canonical URL: {clean_url}\n"
+            f"Domain: {clean_domain}\n"
+            f"Content Type: {clean_type}\n"
             f"Status: {doc.status}\n\n"
-            f"<untrusted_retrieved_content url=\"{doc.canonical_url}\">\n"
+            f"<untrusted_retrieved_content url=\"{clean_url}\">\n"
             f"{content_preview}\n"
             f"</untrusted_retrieved_content>"
         )

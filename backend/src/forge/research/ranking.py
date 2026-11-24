@@ -22,6 +22,14 @@ IGNORED_QUERY_PARAMS = {
     "ref",
     "fbclid",
     "gclid",
+    "api_key",
+    "apikey",
+    "access_token",
+    "token",
+    "secret",
+    "auth",
+    "password",
+    "key",
 }
 
 

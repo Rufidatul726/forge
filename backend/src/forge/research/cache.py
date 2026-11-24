@@ -8,7 +8,7 @@ from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterator
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from forge.config import forge_directory
 from forge.research.models import RetrievedDocument
@@ -19,12 +19,39 @@ DEFAULT_CACHE_TTL_DAYS = 7
 DEFAULT_MAX_DOCUMENTS = 500
 DEFAULT_MAX_CACHE_BYTES = 50 * 1024 * 1024  # 50 MiB
 
+SENSITIVE_OR_TRACKING_PARAMS = {
+    "utm_source",
+    "utm_medium",
+    "utm_campaign",
+    "utm_term",
+    "utm_content",
+    "ref",
+    "fbclid",
+    "gclid",
+    "api_key",
+    "apikey",
+    "access_token",
+    "token",
+    "secret",
+    "auth",
+    "password",
+    "key",
+}
+
 
 def normalize_cache_url(url: str) -> str:
-    """Normalize URL by stripping fragments and trailing slashes for stable cache keying."""
+    """Normalize URL by lowercasing scheme/host, stripping tracking & credential params, and trailing slashes."""
     parsed = urlsplit(url.strip())
+    # Strip user:pass from netloc if present
+    netloc = parsed.netloc.split("@")[-1].lower()
     path = parsed.path.rstrip("/") if parsed.path != "/" else "/"
-    normalized = urlunsplit((parsed.scheme.lower(), parsed.netloc.lower(), path, parsed.query, ""))
+    # Filter tracking & sensitive query parameters
+    filtered_params = [
+        (k, v) for k, v in parse_qsl(parsed.query, keep_blank_values=True)
+        if k.lower() not in SENSITIVE_OR_TRACKING_PARAMS
+    ]
+    new_query = urlencode(filtered_params)
+    normalized = urlunsplit((parsed.scheme.lower(), netloc, path, new_query, ""))
     return normalized
 
 
@@ -149,10 +176,19 @@ class ResearchCache:
 
     def put(self, doc: RetrievedDocument, ttl_days: int | None = None) -> None:
         """Store or update a retrieved document in the cache with expiration and eviction."""
+        # Never cache failed, incomplete, or empty documents
+        if doc.status != "success" or bool(doc.error_message) or not doc.extracted_text:
+            logger.debug("Refusing to cache failed, errored, or empty document: %s", doc.original_url)
+            return
+
         effective_ttl = ttl_days or self.ttl_days
         now = datetime.now(UTC)
         expires_at = (now + timedelta(days=effective_ttl)).isoformat()
         url_hash = compute_url_hash(doc.original_url)
+
+        # Redact credentials from stored URLs
+        clean_canonical = normalize_cache_url(doc.canonical_url)
+        clean_original = normalize_cache_url(doc.original_url)
 
         doc_json = doc.extracted_text.encode("utf-8")
         size_bytes = len(doc_json)
@@ -170,8 +206,8 @@ class ResearchCache:
                     """,
                     (
                         url_hash,
-                        doc.canonical_url,
-                        doc.original_url,
+                        clean_canonical,
+                        clean_original,
                         doc.domain,
                         doc.title,
                         doc.content_type,

@@ -251,6 +251,7 @@ Additional setup and troubleshooting notes are in [Development](docs/DEVELOPMENT
 - Do not use secrets in `VITE_*` variables; frontend build-time variables are public.
 - The API's development CORS allowlist is configured with `CORS_ORIGINS`.
 - Command execution requires explicit per-command approval and is not exposed through the API. User authentication and model-generated tool safety are still required before remote agent workflows are exposed; the generation API key is not user identity. See [Implementation status and steps](docs/IMPLEMENTATION.md).
+- Web research (Forge M4.1) enforces bounded streaming response limits, SSRF prevention (blocking private, loopback, link-local, and cloud metadata IPs), DNS pinning to mitigate DNS rebinding, manual redirect validation, and structural prompt-injection delimiter escaping. These defenses contain risk and enforce boundaries; they do not claim an LLM is immune to semantic injection. See [Architecture](docs/ARCHITECTURE.md).
 
 ## Deployment and support
 

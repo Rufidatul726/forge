@@ -169,6 +169,27 @@ npm run build
 The CI workflow runs the same backend tests/build and frontend tests/lint/build
 on pushes and pull requests.
 
+## Research security and verification (Forge M4.1)
+
+The research test suite exercises bounded streaming, SSRF prevention, DNS pinning, prompt-injection defenses, and persistence hardening with 100% mocked network interactions:
+
+```powershell
+# Run the complete research test suite
+uv run --project backend --extra dev pytest backend\tests -k research
+
+# Run dedicated security and reliability hardening tests
+uv run --project backend --extra dev pytest backend\tests\test_research_security_fetcher.py
+uv run --project backend --extra dev pytest backend\tests\test_research_security_prompt.py
+uv run --project backend --extra dev pytest backend\tests\test_research_reliability_citations.py
+uv run --project backend --extra dev pytest backend\tests\test_research_persistence_hardening.py
+```
+
+### Research security limitations and guarantees
+
+- **SSRF and IP filtering:** Blocks loopback, private, link-local, multicast, cloud metadata (AWS, Azure, Alibaba), and non-global IP addresses. DNS pinning prevents DNS rebinding between check and connect. *Limitation:* Does not inspect or block requests passing through external, publicly accessible proxy chains or open redirects on remote legitimate third-party services.
+- **Prompt-injection defense:** Applies delimiter armoring, HTML/XML angle bracket escaping, and chat control token defanging to ensure retrieved content remains enclosed passive data. *Limitation:* Prompt-injection boundaries reduce risk and contain structure, but do not provide an absolute mathematical guarantee against indirect semantic injection or LLM manipulation.
+- **Evidence verification:** Character offsets are verified against retrieved sources. *Limitation:* Keyword matching establishes relevance, but claim-level semantic correctness is explicitly unverified without a secondary LLM verification step.
+
 ## Troubleshooting
 
 - **Frontend reports API offline:** Start the backend and check `VITE_API_BASE_URL` and `CORS_ORIGINS`. The frontend dev origin must be in the backend CORS list.

@@ -44,6 +44,39 @@ DISALLOWED_DOMAINS = {
     "localhost",
     "localhost.localdomain",
     "broadcasthost",
+    "metadata.google.internal",
+    "instance-data",
+    "metadata",
+}
+
+DISALLOWED_DOMAIN_SUFFIXES = (
+    ".localhost",
+    ".local",
+    ".internal",
+    ".lan",
+    ".home.arpa",
+    ".corp",
+    ".intra",
+    ".private",
+    ".test",
+    ".invalid",
+    ".example",
+)
+
+# Known cloud metadata and hypervisor service IP addresses
+CLOUD_METADATA_IPS = {
+    "169.254.169.254",  # AWS, GCP, Azure IMDS, OpenStack, DigitalOcean
+    "168.63.129.16",    # Azure WireServer / IMDS
+    "100.100.100.200",  # Alibaba Cloud metadata
+}
+
+SENSITIVE_HEADERS = {
+    "authorization",
+    "proxy-authorization",
+    "cookie",
+    "set-cookie",
+    "x-api-key",
+    "x-auth-token",
 }
 
 
@@ -59,7 +92,10 @@ class SSRFSecurityError(FetcherError):
     """Raised when URL resolves to private, loopback, or disallowed address."""
 
     def __init__(self, message: str = "Destination address is prohibited") -> None:
-        super().__init__(message, public_message="Destination address is prohibited (private or reserved address)")
+        super().__init__(
+            message,
+            public_message="Destination address is prohibited (private or reserved address)",
+        )
 
 
 class ContentTooLargeError(FetcherError):
@@ -92,6 +128,14 @@ class TooManyRedirectsError(FetcherError):
         )
 
 
+class RedirectLoopError(TooManyRedirectsError):
+    """Raised when a redirect loop / cycle is detected."""
+
+    def __init__(self, target_url: str) -> None:
+        super().__init__(DEFAULT_MAX_REDIRECTS)
+        self.public_message = "Redirect loop detected"
+
+
 class URLValidationError(FetcherError):
     """Raised when URL is malformed or uses disallowed scheme."""
 
@@ -101,6 +145,10 @@ def is_prohibited_ip(ip_str: str) -> bool:
     try:
         ip = ipaddress.ip_address(ip_str)
     except ValueError:
+        return True
+
+    # Cloud metadata endpoints
+    if str(ip) in CLOUD_METADATA_IPS:
         return True
 
     # Standard loopback, private, reserved, link_local, multicast, unspecified
@@ -114,18 +162,25 @@ def is_prohibited_ip(ip_str: str) -> bool:
     ):
         return True
 
+    # Check global reachability
+    if not ip.is_global:
+        return True
+
     # IPv6 checks
     if isinstance(ip, ipaddress.IPv6Address):
         if ip.ipv4_mapped:
             return is_prohibited_ip(str(ip.ipv4_mapped))
-        # NAT64 prefix (64:ff9b::/96)
-        if ip in ipaddress.ip_network("64:ff9b::/96"):
+        # NAT64 prefixes (64:ff9b::/96 and 64:ff9b:1::/48)
+        if ip in ipaddress.ip_network("64:ff9b::/96") or ip in ipaddress.ip_network("64:ff9b:1::/48"):
             return True
         # Documentation prefix (2001:db8::/32)
         if ip in ipaddress.ip_network("2001:db8::/32"):
             return True
         # Site-local (fec0::/10)
         if ip in ipaddress.ip_network("fec0::/10"):
+            return True
+        # 6to4 (2002::/16)
+        if ip in ipaddress.ip_network("2002::/16"):
             return True
 
     # IPv4 extra reserved/special ranges
@@ -146,35 +201,111 @@ def is_prohibited_ip(ip_str: str) -> bool:
             or ip in ipaddress.ip_network("203.0.113.0/24")
         ):
             return True
+        # Reserved / Future use (240.0.0.0/4)
+        if ip in ipaddress.ip_network("240.0.0.0/4"):
+            return True
 
     return False
 
 
+def _parse_numeric_or_unusual_ip(hostname: str) -> str | None:
+    """
+    Detect and normalize non-standard IP representations (e.g. decimal integers,
+    octal, hex, or abbreviated IPv4) into standard dotted-decimal or raise URLValidationError.
+    """
+    clean_host = hostname.strip().strip("[]")
+
+    # Pure decimal integer representation (e.g. "2130706433" -> 127.0.0.1)
+    if clean_host.isdigit():
+        try:
+            val = int(clean_host)
+            if 0 <= val <= 0xFFFFFFFF:
+                return str(ipaddress.IPv4Address(val))
+        except (ValueError, OverflowError):
+            raise URLValidationError(f"Invalid integer IP representation: {hostname!r}")
+
+    # Check for dotted notation with unusual parts or abbreviated notation (2, 3, 4 parts)
+    parts = clean_host.split(".")
+    if len(parts) in (2, 3, 4) and all(p for p in parts):
+        parsed_parts: list[int] = []
+        is_numeric_dotted = True
+        for p in parts:
+            if p.startswith(("0x", "0X")):
+                try:
+                    parsed_parts.append(int(p, 16))
+                except ValueError:
+                    is_numeric_dotted = False
+                    break
+            elif p.startswith("0") and len(p) > 1 and p.isdigit():
+                try:
+                    parsed_parts.append(int(p, 8))
+                except ValueError:
+                    is_numeric_dotted = False
+                    break
+            elif p.isdigit():
+                try:
+                    parsed_parts.append(int(p, 10))
+                except ValueError:
+                    is_numeric_dotted = False
+                    break
+            else:
+                is_numeric_dotted = False
+                break
+
+        if is_numeric_dotted and len(parsed_parts) == len(parts):
+            try:
+                if len(parsed_parts) == 4 and all(0 <= x <= 255 for x in parsed_parts):
+                    return ".".join(str(x) for x in parsed_parts)
+                elif len(parsed_parts) == 3 and 0 <= parsed_parts[0] <= 255 and 0 <= parsed_parts[1] <= 255 and 0 <= parsed_parts[2] <= 65535:
+                    val = (parsed_parts[0] << 24) | (parsed_parts[1] << 16) | parsed_parts[2]
+                    return str(ipaddress.IPv4Address(val))
+                elif len(parsed_parts) == 2 and 0 <= parsed_parts[0] <= 255 and 0 <= parsed_parts[1] <= 16777215:
+                    val = (parsed_parts[0] << 24) | parsed_parts[1]
+                    return str(ipaddress.IPv4Address(val))
+            except (ValueError, OverflowError):
+                pass
+            raise URLValidationError(f"Disallowed non-standard IP representation: {hostname!r}")
+
+    return None
+
+
 def is_prohibited_hostname(hostname: str) -> bool:
-    """Check if hostname resolves to local/internal naming convention."""
-    h = hostname.lower().strip(".")
+    """Check if hostname resolves to local/internal naming convention or prohibited IP."""
+    h = hostname.lower().strip().rstrip(".")
     if not h:
         return True
+
     if h in DISALLOWED_DOMAINS:
         return True
-    if (
-        h.endswith(".localhost")
-        or h.endswith(".local")
-        or h.endswith(".internal")
-        or h.endswith(".lan")
-        or h.endswith(".home.arpa")
-    ):
+
+    if any(h.endswith(suffix) for suffix in DISALLOWED_DOMAIN_SUFFIXES):
         return True
+
+    # Check non-standard numeric IP
+    try:
+        norm_ip = _parse_numeric_or_unusual_ip(h)
+        if norm_ip is not None and is_prohibited_ip(norm_ip):
+            return True
+    except URLValidationError:
+        return True
+
     return False
 
 
 def safe_resolve_hostname(hostname: str, port: int = 80) -> list[str]:
     """Resolve hostname and ensure ALL returned IP addresses are public and safe."""
-    if is_prohibited_hostname(hostname):
+    clean_host = hostname.strip().strip("[]").rstrip(".")
+    if not clean_host:
+        raise URLValidationError("Hostname cannot be empty.")
+
+    if is_prohibited_hostname(clean_host):
         raise SSRFSecurityError("Destination address is prohibited (local or reserved domain)")
 
+    # Check if host is already an IP address
+    norm_ip = _parse_numeric_or_unusual_ip(clean_host)
+    check_ip_str = norm_ip or clean_host
     try:
-        ip = ipaddress.ip_address(hostname)
+        ip = ipaddress.ip_address(check_ip_str)
         if is_prohibited_ip(str(ip)):
             raise SSRFSecurityError("Destination address is prohibited (private, loopback, or reserved IP)")
         return [str(ip)]
@@ -182,9 +313,12 @@ def safe_resolve_hostname(hostname: str, port: int = 80) -> list[str]:
         pass
 
     try:
-        addr_infos = socket.getaddrinfo(hostname, port, type=socket.SOCK_STREAM)
+        addr_infos = socket.getaddrinfo(clean_host, port, type=socket.SOCK_STREAM)
     except socket.gaierror as exc:
-        raise FetcherError(f"DNS resolution failed for {hostname}", public_message="Could not resolve host name") from exc
+        raise FetcherError(
+            f"DNS resolution failed for {clean_host}",
+            public_message="Could not resolve host name",
+        ) from exc
 
     resolved_ips: list[str] = []
     for family, _, _, _, sockaddr in addr_infos:
@@ -194,13 +328,31 @@ def safe_resolve_hostname(hostname: str, port: int = 80) -> list[str]:
         resolved_ips.append(ip_addr)
 
     if not resolved_ips:
-        raise FetcherError(f"No IP addresses found for {hostname}", public_message="Could not resolve host name")
+        raise FetcherError(
+            f"No IP addresses found for {clean_host}",
+            public_message="Could not resolve host name",
+        )
 
     return resolved_ips
 
 
 class SafeNetworkBackend(AnyIOBackend):
-    """Network backend that enforces safe IP resolution and prevents DNS rebinding."""
+    """
+    Network backend that enforces safe IP resolution and prevents DNS rebinding (TOCTOU) attacks.
+
+    Why this custom transport/backend is necessary:
+    Standard HTTP clients resolve the hostname, check the resulting IP, and then pass the
+    hostname to the operating system's socket connect API. In a DNS rebinding attack, the
+    attacker's authoritative DNS server returns a legitimate public IP during the pre-check,
+    but immediately responds with a private IP (e.g. 127.0.0.1 or 169.254.169.254) when the
+    subsequent connect() lookup occurs.
+
+    SafeNetworkBackend eliminates this time-of-check/time-of-use window by:
+    1. Resolving and validating all destination IPs against strict SSRF rules before connection.
+    2. Establishing the TCP stream directly to the pre-validated IP address.
+    3. Preserving the original hostname for the TLS handshake (SNI and certificate validation),
+       ensuring full TLS security without repeating an untrusted DNS resolution.
+    """
 
     def __init__(self, dns_resolver: Callable[[str, int], list[str]] = safe_resolve_hostname) -> None:
         super().__init__()
@@ -216,6 +368,9 @@ class SafeNetworkBackend(AnyIOBackend):
     ) -> AsyncNetworkStream:
         resolved_ips = self._dns_resolver(host, port)
         target_ip = resolved_ips[0]
+        if is_prohibited_ip(target_ip):
+            raise SSRFSecurityError("Destination address is prohibited (private, loopback, or reserved IP)")
+
         # Connect directly to pre-validated IP to eliminate DNS rebinding window
         return await super().connect_tcp(
             target_ip,
@@ -226,22 +381,71 @@ class SafeNetworkBackend(AnyIOBackend):
         )
 
 
+class SafeHTTPTransport(httpx.AsyncHTTPTransport):
+    """
+    Specialized AsyncHTTPTransport configured with SafeNetworkBackend for DNS pinning
+    and zero keepalive connection pooling to prevent pooled connection reuse to unsafe destinations.
+    Preserves TLS verification and SNI validation.
+    """
+
+    def __init__(
+        self,
+        *,
+        dns_resolver: Callable[[str, int], list[str]] = safe_resolve_hostname,
+        verify: ssl.SSLContext | str | bool = True,
+        **kwargs: typing.Any,
+    ) -> None:
+        super().__init__(verify=verify, http2=False, **kwargs)
+        import httpcore
+
+        ssl_context = httpx.create_ssl_context(verify=verify)
+        self._safe_backend = SafeNetworkBackend(dns_resolver=dns_resolver)
+        # Configure pool with safe network backend and max_keepalive_connections=0
+        # so every request connection validates destination IP afresh.
+        self._pool = httpcore.AsyncConnectionPool(
+            ssl_context=ssl_context,
+            network_backend=self._safe_backend,
+            max_connections=50,
+            max_keepalive_connections=0,
+            http1=True,
+            http2=False,
+            retries=0,
+        )
+
+
 def validate_url(url: str) -> tuple[str, str, int]:
     """Validate scheme, host, and port for safety. Return normalized (scheme, host, port)."""
-    parsed = urlsplit(url)
-    if parsed.scheme.lower() not in ALLOWED_SCHEMES:
+    clean_url = url.strip()
+    if not clean_url:
+        raise URLValidationError("URL cannot be empty.")
+
+    # Reject whitespace or control characters in URL
+    if any(c.isspace() or ord(c) < 32 for c in clean_url):
+        raise URLValidationError("URL contains invalid whitespace or control characters.")
+
+    parsed = urlsplit(clean_url)
+    scheme = parsed.scheme.lower()
+    if scheme not in ALLOWED_SCHEMES:
         raise URLValidationError(
             f"Unsupported URL scheme: {parsed.scheme!r}. Only HTTP and HTTPS are permitted."
         )
 
-    if not parsed.hostname:
+    hostname = parsed.hostname
+    if not hostname:
         raise URLValidationError("URL must contain a valid host name.")
 
     if parsed.username or parsed.password:
         raise URLValidationError("URLs containing embedded credentials are not allowed.")
 
-    port = parsed.port or (443 if parsed.scheme.lower() == "https" else 80)
-    return parsed.scheme.lower(), parsed.hostname, port
+    try:
+        port = parsed.port or (443 if scheme == "https" else 80)
+    except ValueError as exc:
+        raise URLValidationError("URL contains an invalid port number.") from exc
+
+    if not (1 <= port <= 65535):
+        raise URLValidationError(f"URL port {port} is out of valid range (1-65535).")
+
+    return scheme, hostname, port
 
 
 def is_content_type_allowed(content_type_header: str | None) -> bool:
@@ -254,7 +458,11 @@ def is_content_type_allowed(content_type_header: str | None) -> bool:
 
 
 class SafeDocumentFetcher:
-    """Secure, bounded HTTP client for web research and documentation retrieval."""
+    """
+    Secure, bounded HTTP client for web research and documentation retrieval.
+    Enforces bounded streaming, SSRF prevention, DNS pinning, TLS verification,
+    and cross-origin sensitive header striping.
+    """
 
     def __init__(
         self,
@@ -279,14 +487,7 @@ class SafeDocumentFetcher:
         if self._custom_client is not None:
             return self._custom_client
 
-        network_backend = SafeNetworkBackend(dns_resolver=self.dns_resolver)
-        transport = httpx.AsyncHTTPTransport(
-            verify=True,
-            http2=False,
-        )
-        # Inject network backend into transport's pool
-        transport._pool._network_backend = network_backend
-
+        transport = SafeHTTPTransport(dns_resolver=self.dns_resolver, verify=True)
         return httpx.AsyncClient(
             transport=transport,
             timeout=httpx.Timeout(
@@ -306,85 +507,152 @@ class SafeDocumentFetcher:
 
     async def fetch(self, url: str) -> tuple[str, str, str]:
         """
-        Safely fetch raw content from a URL with full SSRF, redirect, and size protection.
+        Safely fetch raw content from a URL with full SSRF, redirect, bounded streaming,
+        and response size protection.
         Returns: (final_url, content_type, text_content).
         """
         current_url = url.strip()
+        orig_scheme, orig_host, orig_port = validate_url(current_url)
+        orig_origin = (orig_scheme, orig_host.lower(), orig_port)
+
         redirect_count = 0
+        visited_urls: set[str] = {current_url}
         client = self._create_client()
 
-        # Retain original domain to avoid leaking credentials/sensitive headers on cross-domain redirect
-        orig_scheme, orig_host, _ = validate_url(current_url)
+        # Track any custom headers across requests
+        current_headers: dict[str, str] = {}
 
         try:
             while True:
                 scheme, host, port = validate_url(current_url)
-                # Verify host against SSRF upfront as fast reject
+                current_origin = (scheme, host.lower(), port)
+
+                # Verify host against SSRF upfront as fast reject before connection attempt
                 self.dns_resolver(host, port)
 
-                request_headers: dict[str, str] = {}
-                # Cross-domain check for sensitive headers if any were added
-                if host.lower() != orig_host.lower():
-                    request_headers["Referer"] = f"{orig_scheme}://{orig_host}/"
+                # Cross-origin redirect protection: strip sensitive headers and adjust Referer
+                request_headers = dict(current_headers)
+                if current_origin != orig_origin:
+                    for h_name in list(request_headers.keys()):
+                        if h_name.lower() in SENSITIVE_HEADERS:
+                            del request_headers[h_name]
+
+                    # Referrer policy: no-referrer-when-downgrade and origin-only for cross-origin
+                    if orig_scheme == "https" and scheme == "http":
+                        request_headers.pop("Referer", None)
+                    else:
+                        request_headers["Referer"] = f"{orig_scheme}://{orig_host}/"
 
                 try:
-                    response = await client.get(current_url, headers=request_headers)
+                    request = client.build_request("GET", current_url, headers=request_headers)
+                    response = await client.send(request, stream=True)
                 except httpx.TimeoutException as exc:
-                    raise FetcherError(f"Request timed out connecting to {host}", public_message="Connection timed out") from exc
-                except httpx.ConnectError as exc:
-                    raise FetcherError(f"Connection failed to {host}", public_message="Could not establish secure connection") from exc
-                except httpx.HTTPError as exc:
-                    raise FetcherError(f"HTTP request error: {exc}", public_message="HTTP request failed") from exc
-
-                # Check for redirect
-                if response.is_redirect:
-                    redirect_count += 1
-                    if redirect_count > self.max_redirects:
-                        raise TooManyRedirectsError(self.max_redirects)
-
-                    location = response.headers.get("location")
-                    if not location:
-                        raise FetcherError("Redirect response missing Location header", public_message="Invalid redirect response")
-
-                    target_url = urljoin(current_url, location)
-                    current_url = target_url
-                    continue
-
-                # Not a redirect - validate status
-                if response.status_code >= 400:
                     raise FetcherError(
-                        f"Server returned HTTP error status {response.status_code}",
-                        public_message=f"Document retrieval failed with status {response.status_code}",
-                    )
+                        f"Request timed out connecting to {host}",
+                        public_message="Connection timed out",
+                    ) from exc
+                except (httpx.ConnectError, ConnectError) as exc:
+                    # Check for SSL/TLS verification failure
+                    err_str = str(exc)
+                    if "certificate verify failed" in err_str or "CERTIFICATE_VERIFY_FAILED" in err_str:
+                        raise FetcherError(
+                            f"TLS certificate verification failed for {host}: {exc}",
+                            public_message="TLS certificate verification failed",
+                        ) from exc
+                    raise FetcherError(
+                        f"Connection failed to {host}: {exc}",
+                        public_message="Could not establish secure connection",
+                    ) from exc
+                except httpx.HTTPError as exc:
+                    raise FetcherError(
+                        f"HTTP request error: {exc}",
+                        public_message="HTTP request failed",
+                    ) from exc
 
-                # Validate content type
-                content_type = response.headers.get("content-type", "text/html")
-                if not is_content_type_allowed(content_type):
-                    raise UnsupportedContentTypeError(content_type)
-
-                # Check Content-Length if present
-                content_length_header = response.headers.get("content-length")
-                if content_length_header:
-                    try:
-                        content_length = int(content_length_header)
-                        if content_length > self.max_response_bytes:
-                            raise ContentTooLargeError(content_length, self.max_response_bytes)
-                    except ValueError:
-                        pass
-
-                # Stream and accumulate body bytes up to limit
-                body_bytes = response.content
-                if len(body_bytes) > self.max_response_bytes:
-                    raise ContentTooLargeError(len(body_bytes), self.max_response_bytes)
-
-                # Decode text using response encoding or utf-8 fallback
-                encoding = response.encoding or "utf-8"
                 try:
-                    text_content = body_bytes.decode(encoding, errors="replace")
-                except Exception:
-                    text_content = body_bytes.decode("utf-8", errors="replace")
+                    # 1. Handle redirects
+                    if response.is_redirect:
+                        await response.aclose()
+                        redirect_count += 1
+                        if redirect_count > self.max_redirects:
+                            raise TooManyRedirectsError(self.max_redirects)
 
-                return current_url, content_type, text_content
+                        location = response.headers.get("location")
+                        if not location:
+                            raise FetcherError(
+                                "Redirect response missing Location header",
+                                public_message="Invalid redirect response",
+                            )
+
+                        target_url = urljoin(current_url, location)
+                        if target_url in visited_urls:
+                            raise RedirectLoopError(target_url)
+                        visited_urls.add(target_url)
+
+                        # Validate redirect destination URL & SSRF early
+                        r_scheme, r_host, r_port = validate_url(target_url)
+                        self.dns_resolver(r_host, r_port)
+
+                        current_url = target_url
+                        continue
+
+                    # 2. Not a redirect - validate status
+                    if response.status_code >= 400:
+                        await response.aclose()
+                        raise FetcherError(
+                            f"Server returned HTTP error status {response.status_code}",
+                            public_message=f"Document retrieval failed with status {response.status_code}",
+                        )
+
+                    # 3. Validate content type BEFORE reading body
+                    content_type = response.headers.get("content-type", "text/html")
+                    if not is_content_type_allowed(content_type):
+                        await response.aclose()
+                        raise UnsupportedContentTypeError(content_type)
+
+                    # 4. Check Content-Length if present as early rejection
+                    content_length_header = response.headers.get("content-length")
+                    if content_length_header:
+                        try:
+                            content_length = int(content_length_header)
+                            if content_length > self.max_response_bytes:
+                                await response.aclose()
+                                raise ContentTooLargeError(content_length, self.max_response_bytes)
+                        except ValueError:
+                            # Malformed content-length header; fall through to bounded streaming
+                            pass
+
+                    # 5. Bounded streaming read: enforce limit on actual bytes delivered
+                    chunks: list[bytes] = []
+                    total_bytes = 0
+
+                    try:
+                        async for chunk in response.aiter_bytes():
+                            total_bytes += len(chunk)
+                            if total_bytes > self.max_response_bytes:
+                                await response.aclose()
+                                raise ContentTooLargeError(total_bytes, self.max_response_bytes)
+                            chunks.append(chunk)
+                    except (httpx.ReadTimeout, httpx.ReadError) as exc:
+                        await response.aclose()
+                        raise FetcherError(
+                            f"Connection interrupted while reading from {host}: {exc}",
+                            public_message="Connection interrupted while downloading document",
+                        ) from exc
+
+                    body_bytes = b"".join(chunks)
+
+                    # Decode text using response encoding or utf-8 fallback
+                    encoding = response.encoding or "utf-8"
+                    try:
+                        text_content = body_bytes.decode(encoding, errors="replace")
+                    except Exception:
+                        text_content = body_bytes.decode("utf-8", errors="replace")
+
+                    return current_url, content_type, text_content
+
+                finally:
+                    await response.aclose()
 
         finally:
             if self._custom_client is None:

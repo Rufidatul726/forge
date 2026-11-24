@@ -182,7 +182,9 @@ class ResearchService:
                         retrieval_date=src.retrieval_timestamp,
                         relevant_excerpt=exc.exact_text,
                         section_heading=exc.section_heading,
-                        is_verified=True,
+                        start_offset=exc.start_offset,
+                        end_offset=exc.end_offset,
+                        is_verified=False,
                     )
                 )
 
@@ -203,15 +205,26 @@ class ResearchService:
         """Derive structured verified facts, inferences, and conflicting sources."""
         query_text = report.query.query
         verified_facts: list[str] = []
+        inferences: list[str] = []
+        unverified_assumptions: list[str] = []
         conflicts: list[dict[str, Any]] = []
 
-        # Collect verified facts from top excerpts
+        # Distinguish verified facts vs source-backed inferences vs unverified assumptions
         for cit in report.citations[:5]:
             heading_ctx = f" (in {cit.section_heading})" if cit.section_heading else ""
-            fact = f"According to {cit.source_title} [{cit.source_id}]{heading_ctx}: {cit.relevant_excerpt[:200]}..."
-            verified_facts.append(fact)
+            if cit.is_verified:
+                fact = f"Verified in {cit.source_title} [{cit.source_id}]{heading_ctx}: {cit.relevant_excerpt[:200]}..."
+                verified_facts.append(fact)
+            else:
+                inf = f"Extracted statement from {cit.source_title} [{cit.source_id}]{heading_ctx}: {cit.relevant_excerpt[:200]}..."
+                inferences.append(inf)
+                unverified_assumptions.append(
+                    f"Claim support for [{cit.source_id}] is unverified without independent evaluation."
+                )
 
         report.verified_facts = verified_facts
+        report.inferences = inferences
+        report.unverified_assumptions = unverified_assumptions
 
         # Detect potential version conflicts among sources
         versions_seen: dict[str, list[str]] = {}
@@ -224,6 +237,17 @@ class ResearchService:
             conflicts.append({
                 "issue": "Multiple versions referenced across retrieved documentation",
                 "versions": {v: s_ids for v, s_ids in versions_seen.items() if len(s_ids) >= 1},
+            })
+
+        # Detect potential deprecation / removal discrepancies
+        dep_sources = [
+            src.source_id for src in report.sources
+            if any(term in src.extracted_text.lower() for term in ["deprecated", "removed in", "discontinued", "no longer supported"])
+        ]
+        if dep_sources and len(dep_sources) < len(report.sources):
+            conflicts.append({
+                "issue": "Deprecation or removal warnings detected in subset of sources",
+                "sources_warning": dep_sources,
             })
 
         report.conflicting_sources = conflicts
